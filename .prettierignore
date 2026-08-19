@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.flue/
+package-lock.json
+
+# Markdown is excluded on purpose. SKILL.md and template.md are prompt content whose
+# wrapping and list shapes are read by a model, and DESIGN.md/TODO.md are hand-authored
+# specs — reflowing either produces noise that hides real edits.
+*.md

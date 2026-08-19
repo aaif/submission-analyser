@@ -1,0 +1,42 @@
+{
+  "name": "project-proposal-analyser",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Flue 2.0 agent that analyses newly filed GitHub issues against repo context and past hand-written reviews, publishes the analysis to a Google Doc, and links it from Discord and the issue itself.",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "fmt": "prettier --write .",
+    "fmt:check": "prettier --check .",
+    "verify": "npm run fmt:check && npm run typecheck && npm run test && npm run agent:faux",
+    "agent": "flue run src/agents/issue-analyst.ts",
+    "agent:faux": "rm -rf node_modules/.cache/flue && FLUE_FAUX=1 GITHUB_REPOSITORY=acme/widget GITHUB_TOKEN=faux flue run src/agents/issue-analyst.ts --id 1 --message 'Analyse issue #1' --json",
+    "smoke:docs": "node --experimental-strip-types scripts/smoke-docs.ts",
+    "smoke:discord": "node --experimental-strip-types scripts/smoke-discord.ts",
+    "smoke:github": "node --experimental-strip-types scripts/smoke-github.ts"
+  },
+  "dependencies": {
+    "@flue/runtime": "2.0.3",
+    "@octokit/rest": "22.0.0",
+    "google-auth-library": "10.4.0",
+    "valibot": "1.4.2"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.84.2",
+    "@flue/cli": "2.0.3",
+    "@types/node": "22.15.3",
+    "msw": "2.11.5",
+    "prettier": "3.6.2",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  },
+  "overrides": {
+    "@earendil-works/pi-ai": "0.84.2",
+    "valibot": "1.4.2"
+  }
+}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.flue/
+.env
+.env.local
+*.log
+coverage/
+.DS_Store
