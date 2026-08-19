@@ -3,6 +3,7 @@ import * as v from 'valibot';
 import { AnalysisSchema, type Analysis } from '../schema/analysis.ts';
 import { boundaryRule, fence } from '../safety/fence.ts';
 import { assertNoSecrets } from '../safety/secret-scan.ts';
+import { writeRunSummary } from '../run-summary.ts';
 import { sanitize } from '../safety/sanitize.ts';
 import { fetchIssue, commentOnIssue, type Issue } from '../integrations/github.ts';
 import { createAnalysisDoc } from '../integrations/google-docs.ts';
@@ -163,10 +164,17 @@ export const analyzeAndPublish = defineTool({
         const response = await harness.prompt(buildAnalysisPrompt(issue), {
           result: AnalysisSchema,
         });
+        const model = `${response.model.provider}/${response.model.id}`;
+        const costUsd = Number(response.usage.cost.total.toFixed(4));
         log.info('analysis complete', {
-          model: `${response.model.provider}/${response.model.id}`,
+          model,
           totalTokens: response.usage.totalTokens,
-          costUsd: Number(response.usage.cost.total.toFixed(4)),
+          costUsd,
+        });
+        writeRunSummary({
+          model,
+          'total tokens': response.usage.totalTokens,
+          'cost (USD)': costUsd,
         });
         return response.data;
       });
@@ -234,6 +242,8 @@ export const analyzeAndPublish = defineTool({
         });
         return { posted: true };
       });
+
+      writeRunSummary({ issue: `#${issue.number}`, doc: doc.url, comment: comment.url });
 
       return {
         output: {

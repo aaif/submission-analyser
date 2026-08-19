@@ -11,6 +11,9 @@
  * cannot deny the reporter the analysis.
  */
 
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   analyzeAndPublish,
@@ -470,5 +473,30 @@ describe('analyze_and_publish — preflight', () => {
     // `publishDeps` is the production object again.
     expect(typeof publishDeps.fetchIssue).toBe('function');
     expect(typeof publishDeps.resolveFolderId).toBe('function');
+  });
+});
+
+describe('run summary', () => {
+  /**
+   * The cost number only satisfies non-functional requirement 5 if a human can see it, and
+   * Flue's logger cannot deliver that on its own — the CLI presenter renders no log events and
+   * `flue run` has no verbosity flag. So this asserts the GITHUB_STEP_SUMMARY channel carries
+   * the model, the cost and the Doc URL, and that it stays silent when the variable is unset.
+   */
+  it('writes model, cost and the published URLs to GITHUB_STEP_SUMMARY', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'flue-summary-')), 'summary.md');
+    process.env.GITHUB_STEP_SUMMARY = path;
+
+    await run();
+
+    const summary = readFileSync(path, 'utf8');
+    expect(summary).toContain('cost (USD)');
+    expect(summary).toContain('faux/faux-1');
+    expect(summary).toContain('https://docs.google.com/');
+  });
+
+  it('does nothing when GITHUB_STEP_SUMMARY is unset', async () => {
+    delete process.env.GITHUB_STEP_SUMMARY;
+    await expect(run()).resolves.toBeDefined();
   });
 });

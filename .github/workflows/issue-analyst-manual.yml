@@ -68,6 +68,11 @@ jobs:
       - name: Prepare run directory
         run: mkdir -p "$(dirname "$RUN_JSON")"
 
+      # So the publication check below only accepts a comment this run produced, not one left
+      # by an earlier run on the same issue.
+      - name: Record the run start time
+        run: echo "RUN_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
       # The bot-author guard cannot be an `if:` here — there is no issue payload on a
       # dispatch — so it is enforced where it also holds for the automatic workflow: the
       # publish tool checks `issue.isBot` after fetching and returns `skipped`
@@ -110,51 +115,79 @@ jobs:
             > "$RUN_JSON" \
             2> >(tee "$RUN_LOG" >&2)
 
-      # Same required assertion as the automatic workflow: `continue-on-error` on the primary
-      # means nothing else can turn "both legs failed" into a red run. Under DRY_RUN the tool
-      # returns status "dry-run" and publishes nothing, so only the envelope outcome is
-      # checked — demanding a Doc URL would fail every dry run by design.
+      # Same required assertion as the automatic workflow, for the same reason:
+      # `continue-on-error` on the primary means nothing else can turn "both legs failed" into
+      # a red run. The envelope outcome must be "completed" (never "success" — that value does
+      # not exist), and for a real run a Doc link must have appeared on the issue.
+      #
+      # The Doc link is checked against the API, not the run output: with `--json` the
+      # envelope's `message` is empty when the tool terminates the turn, and the CLI presenter
+      # prints "tool done analyze_and_publish" without the result payload, so the URL is not
+      # in the log at all.
+      #
+      # Under DRY_RUN the tool returns status "dry-run" and publishes nothing, so only the
+      # outcome is checked — demanding a Doc link would fail every dry run by design.
       - name: Assert the run completed
         id: assert
-        run: |
-          node - <<'NODE'
-          const fs = require('node:fs');
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const fs = require('node:fs');
 
-          const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return ''; } };
-          const jsonRaw = read(process.env.RUN_JSON);
-          const logRaw = read(process.env.RUN_LOG);
-          const dryRun = process.env.DRY_RUN === '1';
+            let raw = '';
+            try {
+              raw = fs.readFileSync(process.env.RUN_JSON, 'utf8');
+            } catch {
+              /* handled immediately below */
+            }
 
-          const fail = (why) => {
-            console.error(`::error::Issue analysis did not complete: ${why}`);
-            process.exit(1);
-          };
+            if (raw.trim() === '') {
+              core.setFailed('No --json envelope was produced: both model legs failed to start.');
+              return;
+            }
 
-          if (jsonRaw.trim() === '') fail('no --json envelope was produced; both model legs failed to start.');
+            const line = raw.trim().split('\n').filter((l) => l.trim() !== '').pop();
+            let envelope;
+            try {
+              envelope = JSON.parse(line);
+            } catch {
+              core.setFailed('The --json envelope was not valid JSON.');
+              return;
+            }
 
-          const line = jsonRaw.trim().split('\n').filter((l) => l.trim() !== '').pop();
-          let envelope;
-          try { envelope = JSON.parse(line); } catch { fail('the --json envelope was not valid JSON.'); }
+            if (envelope.outcome !== 'completed') {
+              const detail = envelope.error ? JSON.stringify(envelope.error).slice(0, 500) : '(no error payload)';
+              core.setFailed(`Run outcome was "${envelope.outcome}", expected "completed". ${detail}`);
+              return;
+            }
 
-          if (envelope.outcome !== 'completed') {
-            const detail = envelope.error ? JSON.stringify(envelope.error).slice(0, 500) : '(no error payload)';
-            fail(`outcome was "${envelope.outcome}", expected "completed". ${detail}`);
-          }
+            if (process.env.DRY_RUN === '1') {
+              core.info('Dry run completed; nothing was published, as intended.');
+              return;
+            }
 
-          if (dryRun) {
-            console.log('Dry run completed; nothing was published, as intended.');
-            process.exit(0);
-          }
+            const issue_number = Number(process.env.ISSUE_NUMBER);
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              since: process.env.RUN_STARTED_AT,
+              per_page: 100,
+            });
 
-          const docUrl = `${envelope.message ?? ''}\n${logRaw}`.match(
-            /https:\/\/docs\.google\.com\/[^\s"'()<>\]]+/,
-          );
-          if (!docUrl) {
-            fail('outcome was "completed" but no Google Doc URL appears in the run output, so nothing was published.');
-          }
+            const published = comments.find((comment) =>
+              /https:\/\/docs\.google\.com\//.test(comment.body ?? ''),
+            );
 
-          console.log(`Published analysis Doc: ${docUrl[0]}`);
-          NODE
+            if (!published) {
+              core.setFailed(
+                'Run outcome was "completed" but no comment containing an analysis Doc link ' +
+                  'appeared on the issue during this run, so nothing was published.',
+              );
+              return;
+            }
+
+            core.info(`Analysis comment published: ${published.html_url}`);
 
       # A dry run publishes nothing, so there is nothing to apologise for and no comment to
       # post. A failed real run gets the same note as the automatic workflow, so the reporter

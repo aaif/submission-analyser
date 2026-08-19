@@ -49,8 +49,9 @@ jobs:
 
     env:
       ISSUE_NUMBER: ${{ github.event.issue.number }}
-      # Both legs write the same two paths, so the assertion below always reads whichever
-      # leg ran last. The primary's own stderr stays visible in its step log.
+      # Both legs write the same two paths, so the envelope check below always reads whichever
+      # leg ran last. The primary's own stderr stays visible in its step log; the .log copy is
+      # for a human debugging a failure, nothing asserts on it.
       RUN_JSON: ${{ github.workspace }}/run/agent.json
       RUN_LOG: ${{ github.workspace }}/run/agent.log
 
@@ -69,6 +70,12 @@ jobs:
 
       - name: Prepare run directory
         run: mkdir -p "$(dirname "$RUN_JSON")"
+
+      # Recorded before either model leg runs, so the publication check below can ignore
+      # analysis comments left by an earlier run of this same workflow (a re-label, a retry)
+      # and only accept one this run produced.
+      - name: Record the run start time
+        run: echo "RUN_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
 
       # Fallback lives at the workflow level, not inside the run: `useModel()` is
       # submission-scoped, and a one-shot CI run is a single submission, so there is no
@@ -131,48 +138,76 @@ jobs:
       # sits unanalysed, and the green tick actively argues against looking.
       #
       # Two assertions, because "the process exited 0" is not the same as "an analysis
-      # exists": the `--json` envelope must say outcome == "completed" (the CLI's values are
-      # completed / failed / aborted / error — there is no "success"), and a Doc URL must
-      # appear in the run output.
+      # exists":
+      #   1. The `--json` envelope must say outcome == "completed". The CLI's values are
+      #      completed / failed / aborted / error — there is NO "success" value, and
+      #      asserting on one would silently never match, making this step decorative.
+      #   2. A Doc link must actually be visible on the issue.
+      #
+      # (2) is checked against the GitHub API rather than by grepping the run output, because
+      # the Doc URL never appears in that output: with `--json` the envelope's `message` is
+      # empty when the tool terminates the turn, and the CLI presenter prints only
+      # "tool done analyze_and_publish", never the tool's result payload. The issue comment
+      # the publish tool posts is where publication is actually observable — and it is also
+      # the thing that matters, since it is what the reporter sees.
       - name: Assert an analysis was published
         id: assert
-        run: |
-          node - <<'NODE'
-          const fs = require('node:fs');
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const fs = require('node:fs');
 
-          const read = (p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return ''; } };
-          const jsonRaw = read(process.env.RUN_JSON);
-          const logRaw = read(process.env.RUN_LOG);
+            let raw = '';
+            try {
+              raw = fs.readFileSync(process.env.RUN_JSON, 'utf8');
+            } catch {
+              /* handled immediately below */
+            }
 
-          const fail = (why) => {
-            console.error(`::error::Issue analysis did not publish: ${why}`);
-            process.exit(1);
-          };
+            if (raw.trim() === '') {
+              core.setFailed('No --json envelope was produced: both model legs failed to start.');
+              return;
+            }
 
-          if (jsonRaw.trim() === '') fail('no --json envelope was produced; both model legs failed to start.');
+            // With --json the CLI prints exactly one JSON line to stdout; take the last
+            // non-empty line so a stray line from a wrapper cannot break the parse.
+            const line = raw.trim().split('\n').filter((l) => l.trim() !== '').pop();
+            let envelope;
+            try {
+              envelope = JSON.parse(line);
+            } catch {
+              core.setFailed('The --json envelope was not valid JSON.');
+              return;
+            }
 
-          // With --json the CLI prints exactly one JSON line to stdout; take the last
-          // non-empty line so a stray line from a wrapper cannot break the parse.
-          const line = jsonRaw.trim().split('\n').filter((l) => l.trim() !== '').pop();
-          let envelope;
-          try { envelope = JSON.parse(line); } catch { fail('the --json envelope was not valid JSON.'); }
+            if (envelope.outcome !== 'completed') {
+              const detail = envelope.error ? JSON.stringify(envelope.error).slice(0, 500) : '(no error payload)';
+              core.setFailed(`Run outcome was "${envelope.outcome}", expected "completed". ${detail}`);
+              return;
+            }
 
-          if (envelope.outcome !== 'completed') {
-            const detail = envelope.error ? JSON.stringify(envelope.error).slice(0, 500) : '(no error payload)';
-            fail(`outcome was "${envelope.outcome}", expected "completed". ${detail}`);
-          }
+            const issue_number = Number(process.env.ISSUE_NUMBER);
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              since: process.env.RUN_STARTED_AT,
+              per_page: 100,
+            });
 
-          // The Doc URL is the proof a side effect actually happened. It reaches the log
-          // either through the agent's closing message or the publish tool's result.
-          const docUrl = `${envelope.message ?? ''}\n${logRaw}`.match(
-            /https:\/\/docs\.google\.com\/[^\s"'()<>\]]+/,
-          );
-          if (!docUrl) {
-            fail('outcome was "completed" but no Google Doc URL appears in the run output, so nothing was published.');
-          }
+            const published = comments.find((comment) =>
+              /https:\/\/docs\.google\.com\//.test(comment.body ?? ''),
+            );
 
-          console.log(`Published analysis Doc: ${docUrl[0]}`);
-          NODE
+            if (!published) {
+              core.setFailed(
+                'Run outcome was "completed" but no comment containing an analysis Doc link ' +
+                  'appeared on the issue during this run, so nothing was published.',
+              );
+              return;
+            }
+
+            core.info(`Analysis comment published: ${published.html_url}`);
 
       # Tell the human who filed the issue that the automation broke, rather than leaving
       # them waiting on a comment that is never coming.
