@@ -1,0 +1,62 @@
+# Offline verification. Every other workflow in this directory handles credentials; this one
+# handles none, on purpose (see the comment on `env` below).
+#
+# ---------------------------------------------------------------------------------------
+# Why every third-party action in this repository is pinned to a full commit SHA
+# ---------------------------------------------------------------------------------------
+# A tag like `actions/checkout@v5` is a mutable pointer. Whoever can move that tag can
+# change the code that runs inside .github/workflows/issue-analyst.yml, and that workflow
+# holds an `issues: write` token and is handed the Copilot, Google and Discord credentials.
+# A moved tag is therefore a supply-chain write into a privileged job. A commit SHA is
+# immutable, so an upgrade becomes a reviewable diff instead of something that happens to
+# us. The version in the trailing comment is documentation only — the SHA is the contract.
+# Upgrade by resolving the new tag (`gh api repos/<owner>/<repo>/git/ref/tags/<tag>`) and
+# replacing both the SHA and the comment.
+# ---------------------------------------------------------------------------------------
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only. CI never comments, never pushes, never mints an OIDC token.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # NO SECRETS ARE AVAILABLE TO THIS JOB AT ALL. Nothing below sets `env:` from
+    # `secrets.*`, and pull_request runs from forks would not receive them anyway. This is a
+    # deliberate property, not an omission: `npm run verify` ends in `npm run agent:faux`,
+    # which is `FLUE_FAUX=1 flue run … --json` against a fake in-memory provider and fake
+    # egress (src/faux.ts). That exercises the real CLI, real skill loading and frontmatter
+    # validation, the real `--json` envelope and the real exit codes with zero credentials.
+    # `flue build` does not exist in Flue 2.0 — `flue run` *is* the skill validation gate,
+    # because it validates every mounted skill at load time, before any model call, and
+    # exits 1 on malformed frontmatter. If a credential is ever needed here, that is a
+    # signal the check belongs in a smoke script (scripts/smoke-*.ts) instead.
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # fmt:check && typecheck && test && agent:faux
+      - name: Verify
+        run: npm run verify

@@ -1,0 +1,132 @@
+# Daily canary. Runs the real agent, against a real model, over a fixed known issue, with
+# DRY_RUN=1 so nothing is published.
+#
+# What this is for: model access is the most fragile dependency in the project. The built-in
+# Copilot provider points at the *individual* endpoint (api.individual.githubcopilot.com),
+# entitlements and required headers for that endpoint have shifted before, and a PAT can be
+# revoked or expire without anyone noticing. This workflow finds that out on a Tuesday
+# morning instead of finding it out from a maintainer asking why a real issue was never
+# analysed.
+#
+# Both matrix legs run independently, with `fail-fast: false`, because the failure that
+# actually hurts is a silently broken *fallback*: it is only ever exercised when the primary
+# is already down, i.e. at the worst possible moment. If the two legs shared a job, a red
+# primary would mask the fallback's state entirely — which is the exact situation the
+# fallback exists to cover.
+#
+# Third-party actions are pinned to commit SHAs; see the top of ci.yml for why.
+
+name: Model canary
+
+on:
+  schedule:
+    # 07:15 UTC daily. Off the hour on purpose — the top of the hour is the busiest slot on
+    # GitHub's scheduler and scheduled runs there are the most likely to be delayed.
+    - cron: '15 7 * * *'
+  workflow_dispatch:
+
+# Read-only, including issues: a dry run analyses and publishes nothing, so it needs no
+# write anywhere. Nothing here needs `issues: write`.
+permissions:
+  contents: read
+  issues: read
+
+concurrency:
+  group: canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - leg: primary
+            model: ${{ vars.PRIMARY_MODEL || 'github-copilot/claude-opus-4.7' }}
+          - leg: fallback
+            model: ${{ vars.FALLBACK_MODEL || 'google/gemini-2.5-pro' }}
+
+    name: canary (${{ matrix.leg }})
+
+    env:
+      # A stable, closed, boring issue to analyse. Set the CANARY_ISSUE_NUMBER repo variable;
+      # 1 is only a placeholder so a fresh clone does something rather than nothing.
+      ISSUE_NUMBER: ${{ vars.CANARY_ISSUE_NUMBER || '1' }}
+      RUN_JSON: ${{ github.workspace }}/run/agent.json
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare run directory
+        run: mkdir -p "$(dirname "$RUN_JSON")"
+
+      # DRY_RUN=1: the publish tool analyses, renders, and then returns status "dry-run"
+      # without creating a Doc, commenting, or posting to Discord. So the Google and Discord
+      # credentials are deliberately absent from this step — an unnecessary credential in a
+      # daily scheduled job is just a wider window.
+      #
+      # Each leg gets only its own provider credential. `env.ts` treats an empty string as
+      # unset, so the inactive one is genuinely absent rather than blank-but-present.
+      - name: Analyse (dry run)
+        env:
+          DRY_RUN: '1'
+          FLUE_MODEL: ${{ matrix.model }}
+          COPILOT_GITHUB_TOKEN: ${{ matrix.leg == 'primary' && secrets.COPILOT_GITHUB_TOKEN || '' }}
+          GEMINI_API_KEY: ${{ matrix.leg == 'fallback' && secrets.GEMINI_API_KEY || '' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          npx flue run src/agents/issue-analyst.ts \
+            --id "$ISSUE_NUMBER" \
+            --message "Analyse issue #$ISSUE_NUMBER" \
+            --json \
+            > "$RUN_JSON"
+
+      # No `continue-on-error` above, so a failed run already fails the job. This checks the
+      # envelope as well, because a run can exit 0 having aborted: the CLI's outcomes are
+      # completed / failed / aborted / error, and only "completed" means the model answered
+      # and the tool ran. There is no "success" value — asserting on one would silently never
+      # match and make this whole workflow decorative.
+      - name: Assert the dry run completed
+        run: |
+          node - <<'NODE'
+          const fs = require('node:fs');
+          let raw = '';
+          try { raw = fs.readFileSync(process.env.RUN_JSON, 'utf8'); } catch { /* handled below */ }
+
+          if (raw.trim() === '') {
+            console.error('::error::Canary produced no --json envelope; the run never started.');
+            process.exit(1);
+          }
+
+          const line = raw.trim().split('\n').filter((l) => l.trim() !== '').pop();
+          let envelope;
+          try {
+            envelope = JSON.parse(line);
+          } catch {
+            console.error('::error::Canary --json envelope was not valid JSON.');
+            process.exit(1);
+          }
+
+          if (envelope.outcome !== 'completed') {
+            const detail = envelope.error ? JSON.stringify(envelope.error).slice(0, 500) : '(no error payload)';
+            console.error(`::error::Canary outcome was "${envelope.outcome}", expected "completed". ${detail}`);
+            console.error('::error::If this is the Copilot leg failing with 401 or 404, read docs/models.md — the baseUrl override is the first thing to try.');
+            process.exit(1);
+          }
+
+          console.log('Canary dry run completed.');
+          NODE
