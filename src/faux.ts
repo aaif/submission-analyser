@@ -29,8 +29,69 @@ export function setupFauxRun(): {
   const faux = registerFauxProvider();
   if (faux === null) return null;
   const record = installOfflineDeps();
-  scriptDefaultRun(faux);
+  scriptScenario(faux, scenarioFromEnv());
   return { faux, record };
+}
+
+/**
+ * Which scripted run to play. `publish` is the happy path; the other two exist to exercise
+ * the `useAgentFinish` guard's two throw branches, which no unit test can reach — plain
+ * Vitest cannot import a module that imports SKILL.md, and the agent module does. Without
+ * these, the guard's security-relevant behaviour is asserted nowhere.
+ */
+export type FauxScenario = 'publish' | 'no-tool' | 'rogue-tool';
+
+const SCENARIOS = new Set<FauxScenario>(['publish', 'no-tool', 'rogue-tool']);
+
+export function scenarioFromEnv(): FauxScenario {
+  const raw = process.env.FLUE_FAUX_SCENARIO ?? 'publish';
+  if (!SCENARIOS.has(raw as FauxScenario)) {
+    throw new Error(
+      `Unknown FLUE_FAUX_SCENARIO "${raw}". Expected one of: ${[...SCENARIOS].join(', ')}.`,
+    );
+  }
+  return raw as FauxScenario;
+}
+
+export function scriptScenario(
+  faux: ReturnType<typeof fauxProvider>,
+  scenario: FauxScenario,
+): void {
+  switch (scenario) {
+    case 'publish':
+      return scriptDefaultRun(faux);
+    case 'no-tool':
+      return scriptNoToolRun(faux);
+    case 'rogue-tool':
+      return scriptRogueToolRun(faux);
+  }
+}
+
+/**
+ * The model answers in prose instead of publishing, twice. Expected outcome: the guard
+ * appends exactly one nudge, and the second refusal exhausts it and fails the run. This is
+ * what proves the framework's 32-cycle continuation ceiling is unreachable — an unbounded
+ * nudge loop would be a runaway-cost event that arrives *before* the failure does.
+ */
+export function scriptNoToolRun(faux: ReturnType<typeof fauxProvider>): void {
+  faux.setResponses([
+    fauxAssistantMessage('Here is a summary of the issue instead of publishing it.'),
+    fauxAssistantMessage('Still just summarising, sorry.'),
+  ]);
+}
+
+/**
+ * The model calls a shell tool rather than the publish tool — the signature of a run taking
+ * direction from the issue body. Expected outcome: the guard throws immediately and appends
+ * nothing. If this scenario ever *completes*, the detector has stopped detecting.
+ */
+export function scriptRogueToolRun(faux: ReturnType<typeof fauxProvider>): void {
+  faux.setResponses([
+    fauxAssistantMessage([fauxToolCall('bash', { command: 'echo faux-rogue-scenario' })], {
+      stopReason: 'toolUse',
+    }),
+    fauxAssistantMessage('Done.'),
+  ]);
 }
 
 /**

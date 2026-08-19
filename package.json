@@ -13,12 +13,13 @@
     "test:watch": "vitest",
     "fmt": "prettier --write .",
     "fmt:check": "prettier --check .",
-    "verify": "npm run fmt:check && npm run typecheck && npm run test && npm run agent:faux",
+    "verify": "npm run fmt:check && npm run typecheck && npm run test && npm run agent:scenarios",
     "agent": "flue run src/agents/issue-analyst.ts",
     "agent:faux": "rm -rf node_modules/.cache/flue && FLUE_FAUX=1 GITHUB_REPOSITORY=acme/widget GITHUB_TOKEN=faux flue run src/agents/issue-analyst.ts --id 1 --message 'Analyse issue #1' --json",
     "smoke:docs": "node --experimental-strip-types scripts/smoke-docs.ts",
     "smoke:discord": "node --experimental-strip-types scripts/smoke-discord.ts",
-    "smoke:github": "node --experimental-strip-types scripts/smoke-github.ts"
+    "smoke:github": "node --experimental-strip-types scripts/smoke-github.ts",
+    "agent:scenarios": "bash scripts/faux-scenarios.sh"
   },
   "dependencies": {
     "@flue/runtime": "2.0.3",
