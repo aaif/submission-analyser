@@ -91,8 +91,7 @@ export function stubOctokit(options: StubOctokitOptions = {}): StubOctokit {
       if (options.createCommentError) throw options.createCommentError;
       return {
         data: {
-          html_url:
-            options.commentUrl ?? 'https://github.com/acme/widget/issues/7#issuecomment-42',
+          html_url: options.commentUrl ?? 'https://github.com/acme/widget/issues/7#issuecomment-42',
         },
       };
     },

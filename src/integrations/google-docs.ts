@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { JWT } from 'google-auth-library';
 import * as v from 'valibot';
 import { googleServiceAccount } from '../env.ts';
@@ -28,7 +29,7 @@ import {
 
 export const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const DRIVE_UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3/files';
-const GOOGLE_DOC_MIME = 'application/vnd.google-apps.document';
+export const GOOGLE_DOC_MIME = 'application/vnd.google-apps.document';
 
 /** Kept as a constant: if Drive's markdown conversion ever regresses, `text/html` here is
  * the whole fallback. */
@@ -51,12 +52,20 @@ export async function createAnalysisDoc(
   const doFetch = deps.fetchImpl ?? fetch;
 
   const metadata = { name: title, mimeType: GOOGLE_DOC_MIME, parents: [folderId] };
-  const form = new FormData();
-  form.append(
-    'metadata',
-    new Blob([JSON.stringify(metadata)], { type: 'application/json; charset=UTF-8' }),
-  );
-  form.append('file', new Blob([markdown], { type: SOURCE_MIME }));
+
+  // Assembled by hand rather than with FormData. `uploadType=multipart` is RFC 2387
+  // `multipart/related` with ordered, unnamed parts; FormData serializes to
+  // `multipart/form-data` with `Content-Disposition: form-data; name=...` headers, which
+  // Drive rejects. The two look interchangeable and are not.
+  const boundary = `flue-${randomBytes(16).toString('hex')}`;
+  const body =
+    `--${boundary}\r\n` +
+    'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+    `${JSON.stringify(metadata)}\r\n` +
+    `--${boundary}\r\n` +
+    `Content-Type: ${SOURCE_MIME}; charset=UTF-8\r\n\r\n` +
+    `${markdown}\r\n` +
+    `--${boundary}--\r\n`;
 
   const url = new URL(DRIVE_UPLOAD_URL);
   url.searchParams.set('uploadType', 'multipart');
@@ -65,8 +74,11 @@ export async function createAnalysisDoc(
 
   const response = await doFetch(url.toString(), {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body: form,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': `multipart/related; boundary=${boundary}`,
+    },
+    body,
   });
 
   if (!response.ok) {
@@ -95,7 +107,7 @@ async function safeText(response: Response): Promise<string> {
 }
 
 /** Turns the two Drive failures that actually happen into actionable messages. */
-function hint(status: number, detail: string): string {
+export function hint(status: number, detail: string): string {
   if (detail.includes('storageQuotaExceeded')) {
     return (
       'A service account has no Drive storage quota of its own, so GOOGLE_DRIVE_FOLDER_ID ' +

@@ -29,10 +29,18 @@ export function neutralizeMentions(text: string): string {
  * aimed at whatever reads the thread next.
  */
 export function stripMarkup(text: string): string {
-  return text
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<\/?[A-Za-z][^>]*>/g, '')
-    .replace(INVISIBLE, '');
+  return (
+    text
+      .replace(/<!--[\s\S]*?-->/g, '')
+      // An *unterminated* `<!--` is the nastier case, and the pattern above cannot match it.
+      // GitHub renders everything after an unclosed comment marker as nothing, so a single
+      // `<!--` surviving into an early field would hide the whole rest of the document from
+      // the human reviewer — including the injection banner. It also arises innocently
+      // whenever a bounded field is truncated mid-comment.
+      .replace(/<!--[\s\S]*$/, '')
+      .replace(/<\/?[A-Za-z][^>]*>/g, '')
+      .replace(INVISIBLE, '')
+  );
 }
 
 const ALLOWED_LINK_HOSTS = new Set([
@@ -65,7 +73,10 @@ export function defuseLinks(text: string): string {
 /** Truncates on a word boundary where possible, marking that it happened. */
 export function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
-  const hard = text.slice(0, max);
+  // `max - 1` leaves room for the ellipsis. Slicing to `max` and then appending would
+  // return `max + 1` characters, which quietly overshoots every caller's budget — including
+  // Discord's 280, where the overshoot is a rejected payload rather than a cosmetic issue.
+  const hard = text.slice(0, max - 1);
   const lastSpace = hard.lastIndexOf(' ');
   const body = lastSpace > max * 0.6 ? hard.slice(0, lastSpace) : hard;
   return `${body.trimEnd()}…`;

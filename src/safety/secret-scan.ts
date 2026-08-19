@@ -29,8 +29,11 @@ const PATTERNS: Pattern[] = [
   { name: 'google-api-key', re: /\bAIza[0-9A-Za-z_-]{35}\b/ },
   { name: 'pem-private-key', re: /-----BEGIN(?: [A-Z]+)* PRIVATE KEY-----/ },
   { name: 'service-account-private-key-id', re: /"private_key_id"\s*:/ },
-  { name: 'openai-key', re: /\bsk-[A-Za-z0-9_-]{20,}\b/ },
+  // Order matters: `anthropic-key` must precede `openai-key`, whose broader `sk-` pattern
+  // also matches every `sk-ant-` key. Both throw either way, but the reported rule name is
+  // the only clue an operator gets about which credential to rotate.
   { name: 'anthropic-key', re: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/ },
+  { name: 'openai-key', re: /\bsk-[A-Za-z0-9_-]{20,}\b/ },
   { name: 'slack-token', re: /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/ },
   { name: 'discord-webhook-url', re: /discord(?:app)?\.com\/api\/webhooks\//i },
   { name: 'aws-access-key-id', re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },

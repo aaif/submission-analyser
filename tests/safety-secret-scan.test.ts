@@ -114,7 +114,7 @@ describe('secret scanning', () => {
 
   it('checks object keys as well as values', () => {
     try {
-      assertNoSecrets({ 'ghp_F4keT0kenF0rTestsOnly000000': 'harmless value' });
+      assertNoSecrets({ ghp_F4keT0kenF0rTestsOnly000000: 'harmless value' });
       expect.unreachable('expected a SecretLeakError');
     } catch (error) {
       const leak = error as SecretLeakError;

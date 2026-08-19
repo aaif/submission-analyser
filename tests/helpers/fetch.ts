@@ -13,7 +13,7 @@ export interface RecordedCall {
   method: string | undefined;
   headers: Record<string, string>;
   /** The raw body as handed to fetch — a string for JSON posts, FormData for the upload. */
-  body: BodyInit | null | undefined;
+  body: unknown;
 }
 
 export interface RecordingFetch {
@@ -47,7 +47,7 @@ export function recordingFetch(
   responder: (call: RecordedCall, index: number) => Response | Promise<Response>,
 ): RecordingFetch {
   const calls: RecordedCall[] = [];
-  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
     const call: RecordedCall = {
       url: String(input),
       init,
@@ -59,6 +59,22 @@ export function recordingFetch(
     return await responder(call, calls.length - 1);
   }) as unknown as typeof fetch;
   return { fetchImpl, calls };
+}
+
+/**
+ * Serializes a recorded call exactly as `fetch` would put it on the wire.
+ *
+ * Needed for the Drive upload: the integration hands fetch a `FormData` object, so the
+ * multipart boundary and the part headers are produced inside fetch, not by the integration.
+ * Building a `Request` from the same `(url, init)` runs the same undici serializer, which is
+ * what makes this an honest wire-level assertion rather than an inspection of the FormData.
+ */
+export async function materialize(call: RecordedCall): Promise<{
+  contentType: string | null;
+  body: string;
+}> {
+  const request = new Request(call.url, call.init);
+  return { contentType: request.headers.get('content-type'), body: await request.text() };
 }
 
 export function jsonResponse(body: unknown, status = 200): Response {

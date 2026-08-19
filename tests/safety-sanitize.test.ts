@@ -127,17 +127,17 @@ describe('truncate', () => {
 
   it('cuts on a word boundary and marks that it happened', () => {
     const out = truncate('the quick brown fox jumps over the lazy dog', 20);
-    expect(out).toBe('the quick brown fox…');
+    expect(out).toBe('the quick brown…');
     expect(out.endsWith('…')).toBe(true);
-    expect(out.length).toBeLessThanOrEqual(21);
+    expect(out.length).toBeLessThanOrEqual(20);
   });
 
-  it('hard-cuts when there is no late word boundary', () => {
-    // Note the ellipsis is appended after the slice, so the result is `max + 1` characters.
-    // See the `renderDiscordSummary` budget test in tests/render.test.ts.
+  it('hard-cuts when there is no late word boundary, ellipsis inside the cap', () => {
+    // The ellipsis comes out of the budget rather than being added to it, so callers can
+    // treat `max` as a real ceiling. tests/render.test.ts depends on this for Discord's 280.
     const out = truncate('a'.repeat(50), 10);
-    expect(out).toBe('aaaaaaaaaa…');
-    expect(out.length).toBe(11);
+    expect(out).toBe('aaaaaaaaa…');
+    expect(out.length).toBe(10);
   });
 });
 

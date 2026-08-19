@@ -50,7 +50,10 @@ export async function fetchIssue(ref: IssueRef, octokit: Octokit = client()): Pr
   const body = issue.body ?? '';
   let truncated = body.length > MAX_BODY_CHARS || rawComments.length >= MAX_COMMENTS;
 
-  const comments = rawComments.map((comment) => {
+  // `per_page` is a request for a bound, not a guarantee of one — a proxy or a GHE release
+  // that over-returns would push every extra comment into the prompt. Slice defensively, the
+  // same way the body is sliced rather than trusted.
+  const comments = rawComments.slice(0, MAX_COMMENTS).map((comment) => {
     const commentBody = comment.body ?? '';
     if (commentBody.length > MAX_COMMENT_CHARS) truncated = true;
     return {
