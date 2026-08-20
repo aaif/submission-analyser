@@ -4,6 +4,14 @@ import { SecretLeakError, assertNoSecrets, findSecret } from '../src/safety/secr
 /**
  * Every credential-shaped string below is fabricated. They exist to exercise the shape
  * patterns; none of them is, or ever was, a real key.
+ *
+ * Note the concatenation on the Slack sample, and keep it. A fixture whose whole job is to
+ * look like a credential also looks like one to *other* scanners: written as a single
+ * literal, that line matches GitHub's Slack partner pattern, and push protection rejects the
+ * push — a fabricated string blocking a repository that holds no secrets, which costs either
+ * a history rewrite or a permanent "allowed secret" entry on the repo. Splitting the prefix
+ * leaves the value identical at runtime while no scanner-matching literal exists in the file.
+ * Anything added below that a partner scanner recognises needs the same treatment.
  */
 const FAKE: Array<[rule: string, sample: string]> = [
   ['github-token', 'ghp_F4keT0kenF0rTestsOnly000000'],
