@@ -226,9 +226,20 @@ supported for this endpoint` until the exchange landed. Done:
 - Skipped under `FLUE_FAUX`, so the offline path never reaches the network.
 - No credential in any throw path: status codes and error class names only, asserted by test.
 
-Still unrun: whether the exchange accepts a *fine-grained PAT*. It is documented for pi-ai's
-OAuth tokens; a PAT is a plausible but unverified input. The canary decides it, and
-docs/models.md carries a curl that decides it in one call.
+**[updated]** It does not accept a fine-grained PAT — the exchange answers 404 for one, where
+an unauthenticated request gets 401, so the credential authenticates and the exchange does not
+apply. `resolveCopilotSession()` therefore tries the exchange and falls back to sending the PAT
+directly at `https://api.githubcopilot.com`, the host GitHub documents for third-party Copilot
+API access. A 401/403 is still a hard failure — only a 404 selects the fallback, because
+retrying a genuine rejection elsewhere would turn one clear error into two confusing ones.
+
+Also added `npm run probe:copilot` (`scripts/probe-copilot.ts`): read-only `GET /models` across
+four hosts × three integration ids plus the exchange, redacting the credential from any output.
+Two wrong diagnoses in a row came from reasoning forward about this endpoint instead of probing
+it, so the probe is the standing answer to "which host works".
+
+Still unrun: whether the direct path actually returns 200 for an org-granted seat. The probe
+answers it in one command.
 
 ## Phase 7 — Validation
 

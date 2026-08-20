@@ -113,9 +113,10 @@ Copilot admin before building a rota around it.
 5. Expiry: 90 days or less. Put the renewal date in a calendar; the daily canary will tell you
    when you have forgotten, but a calendar entry is cheaper than a red Tuesday.
 6. Save the value as the `COPILOT_GITHUB_TOKEN` secret.
-7. Verify it before dispatching anything, with the one-call curl in
-   [docs/models.md](models.md#when-copilot-returns-401-or-404). A `200` there means model
-   access will work; a 401 or 403 means the seat or the permission is not what you think.
+7. Verify it before dispatching anything: `COPILOT_GITHUB_TOKEN=... npm run probe:copilot`.
+   That lists models across every candidate Copilot host with read-only calls — no model is
+   invoked and nothing is charged — and prints which combination the token works with. All
+   401s mean the seat or the permission is not what you think.
 
 **Read-only is not a downgrade — it is the only level GitHub offers.** There is no
 read-and-write for *Copilot Requests*, and the name misleads: the permission grants the ability

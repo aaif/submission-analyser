@@ -19,7 +19,8 @@
     "smoke:docs": "node --experimental-strip-types scripts/smoke-docs.ts",
     "smoke:discord": "node --experimental-strip-types scripts/smoke-discord.ts",
     "smoke:github": "node --experimental-strip-types scripts/smoke-github.ts",
-    "agent:scenarios": "bash scripts/faux-scenarios.sh"
+    "agent:scenarios": "bash scripts/faux-scenarios.sh",
+    "probe:copilot": "node --experimental-strip-types scripts/probe-copilot.ts"
   },
   "dependencies": {
     "@flue/runtime": "2.0.3",

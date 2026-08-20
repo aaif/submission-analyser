@@ -1,36 +1,41 @@
 /**
- * GitHub Copilot authentication — the token exchange pi-ai's api-key path does not do.
+ * GitHub Copilot authentication — the two credential paths pi-ai does not cover.
  *
- * This module exists because of a failure that cost two days of misdiagnosis, so the reason
- * is written down in full.
+ * This module exists because of a failure that cost several rounds of misdiagnosis, so the
+ * reasoning is written down in full.
  *
- * Copilot's inference endpoints do not accept a GitHub credential as the bearer. They accept
- * a short-lived *Copilot* token, which looks like
- * `tid=...;exp=...;proxy-ep=proxy.individual.githubcopilot.com;...`, and which you obtain by
- * presenting a GitHub token to `https://api.github.com/copilot_internal/v2/token`. Present a
- * PAT to the inference endpoint directly and it replies:
+ * pi-ai's api-key path — `envApiKeyAuth` reading `COPILOT_GITHUB_TOKEN`, which is the path a
+ * headless CI job gets — sends the credential *verbatim* as the bearer to
+ * `https://api.individual.githubcopilot.com`. That host refuses it:
  *
  *     400 checking third-party user token: bad request:
  *     Personal Access Tokens are not supported for this endpoint
  *
- * pi-ai has two Copilot credential paths and only one of them does the exchange. Its OAuth
- * path runs a device flow, exchanges, and refreshes. Its api-key path — `envApiKeyAuth`,
- * reading `COPILOT_GITHUB_TOKEN`, which is the path a headless CI job gets — sends the value
- * *verbatim* as the bearer. So the credential arrives one step short of usable.
+ * pi-ai's other path runs an OAuth device flow and exchanges the resulting token at
+ * `/copilot_internal/v2/token` for a short-lived Copilot token — `tid=...;proxy-ep=...` —
+ * which those hosts do accept. We cannot use that path: it needs an interactive browser login
+ * to seed and a writable credential store to refresh, and a one-shot Actions run has neither.
  *
- * We do the missing step here, in the ~40 lines it actually takes, rather than adopt the
- * OAuth path: that path needs an interactive browser login to seed and a writable credential
- * store to refresh, neither of which a one-shot GitHub Actions run has.
+ * So there are two ways a credential can become usable, and which one applies depends on what
+ * kind of credential it is. This module tries them in order:
  *
- * Two things fall out of the exchange for free, and both were open problems before:
+ *  1. **Exchange.** Present the credential at `/copilot_internal/v2/token`. An OAuth token
+ *     from an approved Copilot client gets a Copilot token back, plus a `proxy-ep` naming the
+ *     account's own host — which is how individual / business / enterprise entitlements get
+ *     handled without configuring anything.
+ *  2. **Direct.** A fine-grained PAT with the *Copilot Requests* permission is **not**
+ *     eligible for the exchange: the route answers 404 for one (401 when unauthenticated, so
+ *     the route exists and the credential authenticated — it is the exchange that does not
+ *     apply). GitHub documents that same PAT as the supported way to authenticate Copilot CLI
+ *     in non-interactive environments, and the host it documents for third-party Copilot API
+ *     access is `https://api.githubcopilot.com` — no entitlement segment. So a PAT is sent
+ *     directly, to that host.
  *
- *  - **The host.** The exchanged token carries `proxy-ep=`, which names the account's own
- *    Copilot proxy. So an individual, business or enterprise entitlement is now handled by
- *    reading the response instead of by guessing between three hardcoded hostnames — which
- *    was documented as the project's largest residual risk.
- *  - **Failure location.** A rejected credential now fails here, at the exchange, with a
- *    message that says so, instead of surfacing as an opaque 400 from an inference endpoint
- *    on the first model call.
+ * The choice is *observed*, not configured: whichever the credential turns out to be, it
+ * works, and `COPILOT_BASE_URL` is there to override the host if GitHub moves it.
+ *
+ * Which combination a given credential actually needs is undocumented enough that
+ * `npm run probe:copilot` exists to answer it empirically. If both strategies fail, run that.
  */
 
 import { setProvider } from '@flue/runtime';
@@ -38,7 +43,16 @@ import { githubCopilotProvider } from '@earendil-works/pi-ai/providers/github-co
 import { EnvError, MODEL_CREDENTIAL } from '../env.ts';
 
 const EXCHANGE_URL = 'https://api.github.com/copilot_internal/v2/token';
+
+/** Where an exchanged token goes when it carries no usable `proxy-ep`. */
 const DEFAULT_BASE_URL = 'https://api.individual.githubcopilot.com';
+
+/**
+ * Where a PAT goes. GitHub documents this host for third-party Copilot API access; it has no
+ * `individual`/`business`/`enterprise` segment, which is consistent with it not being tied to
+ * an exchanged, entitlement-scoped token.
+ */
+const DIRECT_BASE_URL = 'https://api.githubcopilot.com';
 
 /**
  * The editor-impersonating headers pi-ai sends, copied deliberately rather than imported:
@@ -54,10 +68,12 @@ const COPILOT_HEADERS: Record<string, string> = {
 };
 
 export interface CopilotSession {
-  /** The bearer token for inference. Short-lived; never logged. */
+  /** The bearer token for inference. Never logged. */
   token: string;
-  /** Derived from the token's `proxy-ep`, so it matches the account's entitlement. */
+  /** For an exchanged token, derived from its `proxy-ep`. For a PAT, the documented host. */
   baseUrl: string;
+  /** Which path got us here. Printed once, so a failing run says how it authenticated. */
+  strategy: 'exchanged' | 'direct-pat' | 'pre-exchanged' | 'host-override';
 }
 
 /**
@@ -82,12 +98,27 @@ function baseUrlFromToken(token: string): string {
   return `https://${host.replace(/^proxy\./, 'api.')}`;
 }
 
+/**
+ * Thrown when the credential is fine but the *exchange* does not apply to it — a PAT. Distinct
+ * from a rejection, because the response to it is to try the direct path, not to give up.
+ */
+export class ExchangeNotApplicable extends Error {
+  constructor() {
+    super('This credential is not eligible for the Copilot token exchange.');
+    this.name = 'ExchangeNotApplicable';
+  }
+}
+
 export async function exchangeCopilotToken(
   githubToken: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<CopilotSession> {
   if (looksExchanged(githubToken)) {
-    return { token: githubToken, baseUrl: baseUrlFromToken(githubToken) };
+    return {
+      token: githubToken,
+      baseUrl: baseUrlFromToken(githubToken),
+      strategy: 'pre-exchanged',
+    };
   }
 
   let response: Response;
@@ -106,6 +137,11 @@ export async function exchangeCopilotToken(
     throw new EnvError(`Could not reach the Copilot token exchange at ${EXCHANGE_URL} (${kind}).`);
   }
 
+  // 404 means "not for this kind of credential", not "bad credential": the route answers 401
+  // when unauthenticated, so a 404 says the token authenticated and the exchange does not
+  // apply to it. That is what a fine-grained PAT gets, and it is the signal to go direct.
+  if (response.status === 404) throw new ExchangeNotApplicable();
+
   if (!response.ok) {
     // Status only. The body of a rejected auth request is not somewhere to look for a
     // credential, but it is also not somewhere worth trusting to be free of one.
@@ -122,7 +158,28 @@ export async function exchangeCopilotToken(
     throw new EnvError(`The Copilot token exchange returned no token. See docs/models.md.`);
   }
 
-  return { token, baseUrl: baseUrlFromToken(token) };
+  return { token, baseUrl: baseUrlFromToken(token), strategy: 'exchanged' };
+}
+
+/**
+ * Picks a working credential path: exchange if the credential is eligible, direct if it is a
+ * PAT. `COPILOT_BASE_URL` short-circuits both, for when GitHub moves a host before we notice.
+ */
+export async function resolveCopilotSession(
+  githubToken: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<CopilotSession> {
+  const override = process.env['COPILOT_BASE_URL']?.trim();
+  if (override !== undefined && override.length > 0) {
+    return { token: githubToken, baseUrl: override, strategy: 'host-override' };
+  }
+
+  try {
+    return await exchangeCopilotToken(githubToken, fetchImpl);
+  } catch (error) {
+    if (!(error instanceof ExchangeNotApplicable)) throw error;
+    return { token: githubToken, baseUrl: DIRECT_BASE_URL, strategy: 'direct-pat' };
+  }
 }
 
 /**
@@ -145,8 +202,12 @@ export async function applyCopilotAuth(fetchImpl: typeof fetch = fetch): Promise
     return;
   }
 
-  const session = await exchangeCopilotToken(githubToken.trim(), fetchImpl);
+  const session = await resolveCopilotSession(githubToken.trim(), fetchImpl);
   process.env[MODEL_CREDENTIAL] = session.token;
+
+  // The host and the strategy, never the credential. A failing run should say how it
+  // authenticated without anyone having to guess, and this is two lines in a CI log.
+  console.log(`[copilot] auth: ${session.strategy} -> ${session.baseUrl}`);
 
   // Each pi-ai Model object carries its own baseUrl, so overriding the provider's is not
   // enough — the models have to be remapped too, or requests keep going to the old host.

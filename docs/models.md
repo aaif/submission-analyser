@@ -62,11 +62,40 @@ path runs a device flow, exchanges, and refreshes. Its api-key path — `envApiK
 `COPILOT_GITHUB_TOKEN`, which is the path a headless CI job gets — sends the value *verbatim*.
 So the credential arrives one step short of usable, and the failure looks like a bad token.
 
-`src/providers/copilot-auth.ts` does the missing step at agent-module load, in about 40 lines,
-and writes the exchanged token back to `COPILOT_GITHUB_TOKEN` (which `envApiKeyAuth` reads
-lazily at the first model call). We did not adopt pi-ai's OAuth path instead because it needs
-an interactive browser login to seed and a writable credential store to refresh, and a
-one-shot Actions run has neither.
+**But a fine-grained PAT is not eligible for the exchange either.** Present one at
+`/copilot_internal/v2/token` and it answers **404** — while an unauthenticated request to the
+same route answers 401. So the route exists, the credential authenticated, and the exchange
+simply does not apply to it. The exchange is for OAuth tokens from approved Copilot clients.
+
+That leaves two ways a credential becomes usable, and `src/providers/copilot-auth.ts` tries
+them in order at agent-module load:
+
+| Credential | Path | Host |
+| --- | --- | --- |
+| OAuth token from a Copilot client | Exchange it, use the Copilot token | from the token's `proxy-ep` |
+| Fine-grained PAT, *Copilot Requests* | Send it directly | `https://api.githubcopilot.com` |
+
+The direct path is not a guess: GitHub documents that same PAT as the supported way to
+authenticate **Copilot CLI in non-interactive environments** — "The token must be a
+fine-grained personal access token owned by your personal account… with the Copilot Requests
+permission" — and `api.githubcopilot.com`, with no entitlement segment, is the host it
+documents for third-party Copilot API access. The entitlement-scoped hosts
+(`api.individual.`, `api.business.`, `api.enterprise.`) are what an *exchanged* token is
+scoped to, which is why sending a PAT to one of them produces that "third-party user token"
+complaint.
+
+The strategy is observed rather than configured — whichever the credential turns out to be,
+it works — and `COPILOT_BASE_URL` overrides the host if GitHub moves it. Each run logs one
+line naming the strategy and host (never the credential), so a failing run says how it
+authenticated.
+
+`npm run probe:copilot` settles all of this empirically for a given token: it lists models
+across every host × integration-id combination with read-only `GET /models` calls, invoking
+no model and charging nothing. Reach for it before theorising — the guesswork here has been
+expensive twice.
+
+We did not adopt pi-ai's OAuth path because it needs an interactive browser login to seed and
+a writable credential store to refresh, and a one-shot Actions run has neither.
 
 ### Two things this fixed for free
 
@@ -78,17 +107,24 @@ one-shot Actions run has neither.
 - **Where it fails.** A rejected credential now fails at the exchange, naming the variable and
   the HTTP status, rather than as an opaque 400 from an inference endpoint mid-run.
 
-### A wrong turn worth recording
+### Two wrong turns worth recording
 
-The first diagnosis was that Copilot's *OpenAI-shaped* endpoints reject PATs and its
-`anthropic-messages` endpoint accepts them — so only the 10 Claude models were usable, and the
-fallback was moved off `gpt-5.4` on those grounds. That was wrong. The evidence looked good
-(the failing leg's error carried pi-ai's `OpenAI API error` prefix, which only the
-`openai-responses` module emits) but the inference did not follow: the Claude leg then failed
-with the identical rejection and no prefix. It is the credential type, not the endpoint.
+Both were confident, both were wrong, and the pattern is the same each time.
 
-The lesson is narrow and reusable: two legs failing the same way is evidence about what they
-share, and both legs shared the credential.
+**"Only the Claude models are reachable."** The first diagnosis was that Copilot's
+OpenAI-shaped endpoints reject PATs while its `anthropic-messages` endpoint accepts them, so
+only the 10 Claude models were usable — and the fallback was moved off `gpt-5.4` on those
+grounds. The evidence looked good: the failing leg's error carried pi-ai's `OpenAI API error`
+prefix, which only the `openai-responses` module emits. But the inference did not follow, and
+the Claude leg then failed with the identical rejection and no prefix. Two legs failing the
+same way is evidence about what they *share* — and what they shared was the credential.
+
+**"The exchange fixes it."** The second diagnosis was right about the mechanism (a GitHub
+token is not a Copilot token) and wrong about the remedy, because it assumed without checking
+that a PAT could be exchanged. It cannot; the exchange answers 404 for one.
+
+What both have in common is reasoning forward from a plausible mechanism instead of probing
+the thing itself. `npm run probe:copilot` is the corrective, and it costs one command.
 
 ## The two configured models
 
@@ -161,14 +197,17 @@ only the provider's is not enough; that is why `applyCopilotAuth()` maps `getMod
 
 So the order to check now is:
 
-1. **Did the exchange succeed?** A failure there names `COPILOT_GITHUB_TOKEN` and the HTTP
-   status. 401 or 403 means the token lacks the `Copilot Requests` permission, or the account
-   that owns it has no active Copilot seat.
-2. **Is the credential a fine-grained PAT owned by a user account with a seat?** Classic tokens
+1. **Which path did it take?** Every run logs `[copilot] auth: <strategy> -> <host>`. A 401 or
+   403 from the exchange names `COPILOT_GITHUB_TOKEN` and the status, and means the token lacks
+   the `Copilot Requests` permission or the owning account has no active seat. A 404 there is
+   expected for a PAT and is not an error — it selects the direct path.
+2. **Does any host accept the credential?** `npm run probe:copilot`. If everything 401s, the
+   credential is the problem; if one combination returns 200, set `COPILOT_BASE_URL` to it.
+3. **Is the credential a fine-grained PAT owned by a user account with a seat?** Classic tokens
    are not accepted, and *Copilot Requests* is an account permission that does not exist on an
    org-owned token — seats belong to member accounts, not to the org. A machine account in the
    org, holding a seat, is the durable answer. See docs/secrets.md §1.
-3. **Headers.** Every model entry carries `Copilot-Integration-Id: vscode-chat`,
+4. **Headers.** Every model entry carries `Copilot-Integration-Id: vscode-chat`,
    `Editor-Version`, `Editor-Plugin-Version` and a `User-Agent` naming a VS Code Copilot Chat
    build (32 of 32 entries). That is pi-ai presenting itself as the editor plugin, and those
    values have had to move before as GitHub tightened the endpoint. `copilot-auth.ts` copies
@@ -179,8 +218,9 @@ So the order to check now is:
 The cheap way to test any of this is the **Model canary** workflow: it is a dry run, it
 publishes nothing, and it can be dispatched by hand as often as you like.
 
-To check a token by hand without a workflow run — this is the exact call
-`applyCopilotAuth()` makes, and a 200 with a `token` field means model access will work:
+To check a token by hand, `npm run probe:copilot` is the better tool: it tries every host and
+integration id and tells you which combination works. The single call below only exercises the
+*exchange*, which a fine-grained PAT is expected to 404 on:
 
 ```bash
 curl -sS -o /dev/null -w '%{http_code}\n' \

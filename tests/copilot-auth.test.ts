@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { EnvError } from '../src/env.ts';
-import { applyCopilotAuth, exchangeCopilotToken } from '../src/providers/copilot-auth.ts';
+import {
+  ExchangeNotApplicable,
+  applyCopilotAuth,
+  exchangeCopilotToken,
+  resolveCopilotSession,
+} from '../src/providers/copilot-auth.ts';
 
 /**
  * The regression these tests exist for: Copilot's inference endpoints reject a GitHub PAT,
@@ -99,6 +104,16 @@ describe('exchangeCopilotToken', () => {
     expect(calls).toHaveLength(0);
   });
 
+  // 404, not 401: the route answers 401 when unauthenticated, so a 404 means the credential
+  // authenticated and the exchange simply does not apply to it. That is what a fine-grained
+  // PAT gets, and treating it as a rejection is what made the first attempt dead-end.
+  it('reports a 404 as "not applicable" rather than as a rejection', async () => {
+    const { impl } = stubFetch(() => jsonResponse({ message: 'Not Found' }, 404));
+    expect(await thrownAsync(() => exchangeCopilotToken(PAT, impl))).toBeInstanceOf(
+      ExchangeNotApplicable,
+    );
+  });
+
   it('fails with the HTTP status when the exchange rejects the token', async () => {
     const { impl } = stubFetch(() => jsonResponse({ message: 'Bad credentials' }, 401));
     const error = await thrownAsync(() => exchangeCopilotToken(PAT, impl));
@@ -142,6 +157,66 @@ describe('exchangeCopilotToken', () => {
   });
 });
 
+describe('resolveCopilotSession', () => {
+  const savedHost = process.env['COPILOT_BASE_URL'];
+
+  afterEach(() => {
+    if (savedHost === undefined) delete process.env['COPILOT_BASE_URL'];
+    else process.env['COPILOT_BASE_URL'] = savedHost;
+  });
+
+  beforeEach(() => {
+    delete process.env['COPILOT_BASE_URL'];
+  });
+
+  it('uses the exchanged token and its host when the credential is eligible', async () => {
+    const { impl } = stubFetch(() => jsonResponse({ token: EXCHANGED }));
+    const session = await resolveCopilotSession(PAT, impl);
+
+    expect(session).toMatchObject({
+      token: EXCHANGED,
+      baseUrl: 'https://api.individual.githubcopilot.com',
+      strategy: 'exchanged',
+    });
+  });
+
+  // The path a fine-grained PAT takes: not eligible for the exchange, sent directly to the
+  // host GitHub documents for third-party Copilot API access.
+  it('falls back to sending a PAT directly when the exchange does not apply', async () => {
+    const { impl } = stubFetch(() => jsonResponse({ message: 'Not Found' }, 404));
+    const session = await resolveCopilotSession(PAT, impl);
+
+    expect(session).toEqual({
+      token: PAT,
+      baseUrl: 'https://api.githubcopilot.com',
+      strategy: 'direct-pat',
+    });
+  });
+
+  // A rejection is not a fallback. Retrying a 401 against another host would turn a clear
+  // "your token is wrong" into a confusing second failure somewhere else.
+  it('does not fall back when the exchange actually rejects the credential', async () => {
+    for (const status of [401, 403, 500]) {
+      const { impl } = stubFetch(() => jsonResponse({ message: 'nope' }, status));
+      const error = await thrownAsync(() => resolveCopilotSession(PAT, impl));
+      expect(String(error)).toContain(String(status));
+    }
+  });
+
+  it('lets COPILOT_BASE_URL short-circuit both paths, for when GitHub moves a host', async () => {
+    process.env['COPILOT_BASE_URL'] = 'https://api.business.githubcopilot.com';
+    const { impl, calls } = stubFetch(() => jsonResponse({ token: EXCHANGED }));
+    const session = await resolveCopilotSession(PAT, impl);
+
+    expect(session).toEqual({
+      token: PAT,
+      baseUrl: 'https://api.business.githubcopilot.com',
+      strategy: 'host-override',
+    });
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe('applyCopilotAuth', () => {
   const saved = process.env['COPILOT_GITHUB_TOKEN'];
 
@@ -152,6 +227,15 @@ describe('applyCopilotAuth', () => {
   afterEach(() => {
     if (saved === undefined) delete process.env['COPILOT_GITHUB_TOKEN'];
     else process.env['COPILOT_GITHUB_TOKEN'] = saved;
+  });
+
+  it('leaves a PAT in place when the exchange does not apply to it', async () => {
+    process.env['COPILOT_GITHUB_TOKEN'] = PAT;
+    const { impl } = stubFetch(() => jsonResponse({ message: 'Not Found' }, 404));
+
+    await applyCopilotAuth(impl);
+
+    expect(process.env['COPILOT_GITHUB_TOKEN']).toBe(PAT);
   });
 
   it('replaces the GitHub token in the environment with the exchanged Copilot token', async () => {
