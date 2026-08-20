@@ -64,44 +64,85 @@ would not silently start working — see [docs/models.md](models.md).
 
 ## 1. Copilot PAT (`COPILOT_GITHUB_TOKEN`)
 
-The `github-copilot` provider authenticates with a GitHub PAT belonging to an account that
-has a Copilot entitlement.
+The `github-copilot` provider authenticates with a GitHub PAT belonging to an account that has
+a Copilot seat.
 
-1. Confirm the account has Copilot access. Org-assigned seats count; check with the org
-   admin if unsure, because a token from an account with no entitlement fails at the first
-   model request, not at registration.
+**Read this first if the org owns the seats.** A Copilot seat is a licence assigned to a
+*unique user account* — an organisation does not hold seats, it grants them to its members. So
+"the org has the seats and the credits" resolves to "the org has granted seats to member user
+accounts", and the token that uses one is owned by that **member**, not by the org.
+
+That is also why the permission vanishes when you switch the resource-owner dropdown to the
+org. *Copilot Requests* is an **account** permission, and a fine-grained PAT owned by an
+organisation only ever offers *repository* and *organisation* permissions — the account section
+does not exist on it. Nothing is missing and no admin setting will reveal it; it is structural.
+If *Copilot Requests* is absent from the list rather than merely read-only, the resource owner
+is set to an org.
+
+### Which account should own the token
+
+| | Fastest | Recommended for anything long-lived |
+| --- | --- | --- |
+| Owner | Your own account | A **machine account** in the org, with a seat assigned to it |
+| Set-up | None | Create the account, invite it to the org, assign it a Copilot seat |
+| Dies when | You leave the org or lose your seat | Someone revokes that account's seat |
+| Audit trail says | A person did it | The analyst did it |
+
+Use your own account to get the first green run today; move to a machine account before this
+matters to anyone else. A personal credential sitting in a shared repository's secrets is the
+kind of thing that works fine right up until a leaver breaks a workflow nobody remembers
+owning.
+
+GitHub's Terms of Service permit machine accounts explicitly — an account "set up by an
+individual human who accepts the Terms on behalf of the account… used exclusively for
+performing automated tasks". What GitHub does *not* document either way is whether a machine
+account may hold a **Copilot** seat. Seats attach to user accounts and a machine account is a
+user account, so it follows, but it follows rather than being stated. Confirm it with your
+Copilot admin before building a rota around it.
+
+### Generating it
+
+1. Confirm the account has a seat. Org-assigned seats count. A token from an account with no
+   seat fails at the token exchange, not at registration.
 2. https://github.com/settings/personal-access-tokens → **Generate new token** (fine-grained).
    It must be **fine-grained**: classic `ghp_` tokens are not accepted for Copilot requests.
-3. Resource owner: **your own personal account**, not the organisation. Repository access:
-   **Public repositories (read-only)** is enough — this token is for model access, not
-   repository access.
+3. Resource owner: **the account itself** — yours, or the machine account. Not the
+   organisation, per the above. Repository access: **Public repositories (read-only)** is
+   enough; this token is for model access, not repository access.
 4. Account permissions → **Copilot Requests**: *Read-only*. Grant nothing else.
-5. Expiry: 90 days or less. Put the renewal date in a calendar; the daily canary will tell
-   you when you have forgotten, but a calendar entry is cheaper than a red Tuesday.
+5. Expiry: 90 days or less. Put the renewal date in a calendar; the daily canary will tell you
+   when you have forgotten, but a calendar entry is cheaper than a red Tuesday.
 6. Save the value as the `COPILOT_GITHUB_TOKEN` secret.
+7. Verify it before dispatching anything, with the one-call curl in
+   [docs/models.md](models.md#when-copilot-returns-401-or-404). A `200` there means model
+   access will work; a 401 or 403 means the seat or the permission is not what you think.
 
 **Read-only is not a downgrade — it is the only level GitHub offers.** There is no
-read-and-write for *Copilot Requests*, and the name misleads: the permission grants the
-ability to *make* Copilot requests, which reads like a write. An earlier version of this
-document said "read and write" and sent at least one operator looking for a control that does
-not exist.
+read-and-write for *Copilot Requests*, and the name misleads: the permission grants the ability
+to *make* Copilot requests, which reads like a write. An earlier version of this document said
+"read and write" and sent at least one operator looking for a control that does not exist.
 
-**The resource owner must be a personal account.** *Copilot Requests* is a user-level
-permission and does not appear at all on an organisation-owned token, so if the permission is
-missing from the list rather than merely read-only, the resource-owner dropdown is set to the
-org. Two consequences worth being deliberate about, because there is no service-account option
-here:
+### Who pays
 
-- Requests count against **that person's** premium-request allowance. The analyst's model
-  spend lands on whoever minted the token, not on the org.
-- The token is a personal credential in a shared repository's secrets, and it stops working
-  when that person leaves. Pick the holder accordingly, and keep the whole thing bounded by
-  the cost controls in [docs/models.md](models.md).
+Premium requests draw on the allowance attached to **the seat**, so with an org-assigned seat
+the analyst's model spend lands on the org's Copilot budget rather than on the token holder's
+personal allowance. (An earlier version of this document said the spend lands on whoever minted
+the token. That is true only for a personal Copilot subscription.) Either way, keep it bounded
+by the cost controls in [docs/models.md](models.md).
 
-If model calls come back **401 or 404**, do not start rotating tokens: read
-[docs/models.md](models.md) first. The built-in provider points at the *individual* Copilot
-endpoint, and a business or enterprise entitlement needs a different host. That is a
-one-line config override, and it is the more likely explanation.
+A **Copilot Business or Enterprise policy** can block this before any of the above matters:
+those plans carry org-level switches governing Copilot outside the editor. If the exchange
+returns 403 for an account you can see has a seat, that is the next place to look, and it needs
+an org admin rather than a new token.
+
+### If model calls fail
+
+Do not start rotating tokens — read [docs/models.md](models.md) first. A GitHub PAT is not a
+Copilot token: `src/providers/copilot-auth.ts` exchanges it for one at
+`/copilot_internal/v2/token`, and a failure there names this variable and the HTTP status. The
+old advice in this spot — that a business or enterprise seat needs a different Copilot host and
+that is the likely explanation — no longer applies: the exchanged token names the account's own
+host, so business and enterprise entitlements are handled without configuration.
 
 ## 2. Google service account and Drive folder
 

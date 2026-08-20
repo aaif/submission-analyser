@@ -24,7 +24,7 @@ and the only model credential in the project is:
 
 | Provider id      | Credential             | Where it comes from                    |
 | ---------------- | ---------------------- | -------------------------------------- |
-| `github-copilot` | `COPILOT_GITHUB_TOKEN` | Fine-grained PAT, personal account, **Copilot Requests: read-only** (the only level offered) |
+| `github-copilot` | `COPILOT_GITHUB_TOKEN` | Fine-grained PAT owned by a **user** account with a Copilot seat (an org-owned token cannot carry the permission), **Copilot Requests: read-only** — the only level offered. See docs/secrets.md §1. |
 
 The provider is a pi-ai built-in that `flue run` registers for us — there is no hand-written
 provider module in this repository. (If you are reading an older draft: `COPILOT_TOKEN` is
@@ -164,8 +164,10 @@ So the order to check now is:
 1. **Did the exchange succeed?** A failure there names `COPILOT_GITHUB_TOKEN` and the HTTP
    status. 401 or 403 means the token lacks the `Copilot Requests` permission, or the account
    that owns it has no active Copilot seat.
-2. **Is the credential a fine-grained PAT owned by a personal account?** Classic tokens are not
-   accepted, and the permission does not exist on org-owned tokens. See docs/secrets.md §1.
+2. **Is the credential a fine-grained PAT owned by a user account with a seat?** Classic tokens
+   are not accepted, and *Copilot Requests* is an account permission that does not exist on an
+   org-owned token — seats belong to member accounts, not to the org. A machine account in the
+   org, holding a seat, is the durable answer. See docs/secrets.md §1.
 3. **Headers.** Every model entry carries `Copilot-Integration-Id: vscode-chat`,
    `Editor-Version`, `Editor-Plugin-Version` and a `User-Agent` naming a VS Code Copilot Chat
    build (32 of 32 entries). That is pi-ai presenting itself as the editor plugin, and those
