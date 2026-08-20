@@ -99,6 +99,20 @@ Nothing is stored as a secret; the workflows pass `secrets.GITHUB_TOKEN` as
 it authorises inference requests — so it does not weaken the read-only posture the threat
 model rests on.
 
+**[measured] Neither credential CI can obtain reaches the Copilot API.** The Actions token is
+refused at all four hosts with `GitHub App Server-To-Server Tokens are not supported for this
+endpoint`, and the exchange 404s for it. Same shape as the PAT result, different noun. Those
+hosts accept only an exchanged `tid=` token, and we have found no route that will mint one from
+either credential.
+
+That refusal is worth reading closely: it names server-to-server tokens as unsupported *at this
+endpoint*, which implies another endpoint accepts them. GitHub documents the `copilot` CLI
+working in Actions with this exact token, so a working route exists and is not among the ones
+probed. The `Probe Copilot access` workflow now has a second job that installs the CLI, runs one
+trivial prompt with the workflow's own token, and reports the hostnames it contacted —
+hostnames only, since the CLI's debug logs carry the credential. That answers two things at
+once: whether the org policy is on at all, and which route to point `copilot-auth.ts` at.
+
 **The Actions token is not exchange-eligible.** Measured: the exchange 404s for it, exactly as
 it does for a PAT. That is not a problem, and it is the shape of the whole feature — the
 entitlement rides on the workflow's `copilot-requests: write` permission, not on an exchanged

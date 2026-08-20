@@ -44,3 +44,70 @@ jobs:
         env:
           COPILOT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm run probe:copilot
+
+  # The decisive experiment, added after the API probe above came back empty for both
+  # credential classes CI can obtain: a PAT is refused as `Personal Access Tokens are not
+  # supported`, the Actions token as `GitHub App Server-To-Server Tokens are not supported`,
+  # and the exchange 404s for both. Yet GitHub documents the `copilot` CLI working in Actions
+  # with this exact token. So the CLI reaches a route we have not found.
+  #
+  # This job answers two questions at once, and both are worth knowing:
+  #
+  #   1. Does the CLI work here at all? If it fails, the org policy ("Allow use of Copilot CLI
+  #      billed to the organization") is off and no amount of endpoint archaeology helps.
+  #   2. Which hosts does it contact? Whatever it uses to mint a Copilot token is what
+  #      `src/providers/copilot-auth.ts` should be calling — that would keep the whole Flue
+  #      architecture and change one URL.
+  #
+  # It prints hostnames only, never log bodies: the CLI's debug logs would carry the token.
+  cli:
+    name: Does the Copilot CLI itself work here?
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '22'
+
+      - name: Install Copilot CLI
+        run: npm install -g @github/copilot
+
+      # The flag names matter for the next step and are not stable enough to assume, so record
+      # what this version actually accepts.
+      - name: Record the CLI version and flags
+        run: |
+          copilot --version || true
+          copilot --help || true
+
+      # `--yolo` is what GitHub documents for non-interactive use. Deliberately not
+      # `continue-on-error`: a failure here is the answer, not an inconvenience, and the log
+      # above will carry the reason.
+      - name: Run one trivial prompt
+        id: prompt
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Copilot's own debug switches, both harmless if this build ignores them.
+          COPILOT_LOG_LEVEL: debug
+          DEBUG: '*'
+        run: |
+          copilot --yolo -p 'Reply with the single word OK and nothing else.'
+
+      # Hostnames only, sorted and deduplicated. This is the datum the whole job exists for:
+      # if a host appears here that the matrix above did not try, that is the answer.
+      - name: Report which hosts the CLI contacted
+        if: always()
+        run: |
+          shopt -s nullglob
+          found=0
+          for dir in "$HOME/.copilot" "$HOME/.config/copilot" "$RUNNER_TEMP/copilot-logs"; do
+            [ -d "$dir" ] || continue
+            found=1
+            echo "--- $dir"
+            find "$dir" -type f | head -50
+            grep -rhoE 'https?://[A-Za-z0-9._-]+' "$dir" 2>/dev/null | sort -u || true
+          done
+          [ "$found" = 1 ] || echo 'No CLI log directory found; this build logs elsewhere.'
+          echo "prompt step outcome: ${{ steps.prompt.outcome }}"

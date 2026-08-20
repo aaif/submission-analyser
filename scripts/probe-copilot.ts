@@ -38,7 +38,22 @@ const HOSTS = [
  */
 const INTEGRATION_IDS = ['vscode-chat', 'copilot-cli', undefined];
 
-const EXCHANGE_URL = 'https://api.github.com/copilot_internal/v2/token';
+/**
+ * `/copilot_internal/v2/token` is the route pi-ai's OAuth path uses and the one this project
+ * calls. It 404s for both an Actions token and a PAT, which means the exchange for those
+ * credential classes — if it exists — lives elsewhere. The rest of this list is the search:
+ * every one is a read-only GET, and a 404 rules a candidate out as cheaply as it gets.
+ */
+const EXCHANGE_URLS = [
+  'https://api.github.com/copilot_internal/v2/token',
+  'https://api.github.com/copilot_internal/v3/token',
+  'https://api.github.com/copilot_internal/token',
+  'https://api.github.com/copilot_internal/user',
+  'https://api.githubcopilot.com/copilot_internal/v2/token',
+  'https://copilot-proxy.githubusercontent.com/v1/models',
+];
+
+const EXCHANGE_URL = EXCHANGE_URLS[0] as string;
 
 interface Probe {
   label: string;
@@ -101,10 +116,10 @@ async function probeModels(host: string, token: string, integrationId?: string):
   }
 }
 
-async function probeExchange(token: string): Promise<Probe> {
-  const label = EXCHANGE_URL;
+async function probeExchange(token: string, url: string = EXCHANGE_URL): Promise<Probe> {
+  const label = url;
   try {
-    const response = await fetch(EXCHANGE_URL, {
+    const response = await fetch(url, {
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${token}`,
@@ -147,8 +162,12 @@ async function main(): Promise<void> {
     `\nCredential kind: ${kind}  (ghs_ = Actions token, gho_ = OAuth, github_pat_ = PAT)`,
   );
 
-  console.log(`\nToken exchange (what src/providers/copilot-auth.ts does today):\n`);
-  print([await probeExchange(token)]);
+  console.log(`\nToken exchange candidates (the first is what the code calls today):\n`);
+  const exchanges: Probe[] = [];
+  for (const url of EXCHANGE_URLS) {
+    exchanges.push(await probeExchange(token, url));
+  }
+  print(exchanges);
 
   console.log(`\nDirect model listing, by host and integration id:\n`);
   const probes: Probe[] = [];
@@ -158,6 +177,13 @@ async function main(): Promise<void> {
     }
   }
   print(probes);
+
+  const exchangeWinners = exchanges.filter((probe) => probe.status === 200);
+  if (exchangeWinners.length > 0) {
+    console.log(
+      `\n${exchangeWinners.length} exchange route(s) answered 200. That is the route to call.\n`,
+    );
+  }
 
   const winners = probes.filter((probe) => probe.status === 200);
   console.log(
