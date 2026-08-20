@@ -37,11 +37,3 @@ export const DiscordPostInputSchema = v.strictObject({
   injectionSuspected: v.boolean(),
 });
 export type DiscordPostInput = v.InferOutput<typeof DiscordPostInputSchema>;
-
-export const CommentInputSchema = v.strictObject({
-  owner: v.string(),
-  repo: v.string(),
-  issueNumber: v.pipe(v.number(), v.integer(), v.minValue(1)),
-  body: v.pipe(v.string(), v.minLength(1), v.maxLength(60_000)),
-});
-export type CommentInput = v.InferOutput<typeof CommentInputSchema>;

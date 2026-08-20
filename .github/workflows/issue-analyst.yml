@@ -1,61 +1,96 @@
-# Analyse a newly filed issue and publish the analysis (Google Doc + issue comment +
-# Discord). One run per issue. Third-party actions are pinned to commit SHAs — the reason is
-# spelled out at the top of ci.yml.
+# Analyses one issue and publishes a Google Doc plus a Discord announcement.
+#
+# The trigger is `workflow_dispatch` and nothing else, because the issues being analysed live
+# in a *different* repository. Workflow events are repo-local: `on: issues` here would only
+# ever fire for issues filed against this tooling repo, which is not what anyone wants.
+# Instead the target repository runs a small dispatcher workflow (see
+# examples/target-repo-dispatch.yml) that calls this one. That also means the manual and
+# automatic paths are the same code path — there is no second workflow to drift.
+#
+# Third-party actions are pinned to commit SHAs; see the top of ci.yml for why.
 
 name: Issue analyst
 
 on:
-  issues:
-    types: [opened, labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to analyse (digits only)'
+        required: true
+        type: string
+      target_repo:
+        description: 'owner/repo holding the issue. Defaults to the TARGET_REPOSITORY variable.'
+        required: false
+        type: string
+      dry_run:
+        description: 'Analyse and render, but publish nothing (no Doc, no Discord)'
+        required: false
+        default: false
+        type: boolean
 
-# EXACTLY these two, and no more.
+# `contents: read` and nothing else.
 #
-# `contents: write` must never appear here. This job feeds an attacker-controlled issue body
-# to a model that has shell access to the checkout (`local()` provides no isolation and
-# mounts the file and shell tools regardless of any allow-list). With a read-only token, a
-# write to the checkout is inert — it dies with the runner. With a writable token, the same
-# write lands in the repository, and this workflow file itself becomes attacker-controlled:
-# an injected issue body would have achieved arbitrary code execution, with these
-# credentials, on the next run. Same reasoning for `pull-requests: write` and for
-# `id-token: write`, which would hand an injected run a federated identity in the cloud.
+# There is deliberately no `issues: write` any more: the agent publishes to a Google Doc and
+# to Discord and never writes back to a repository, so the token it holds cannot be talked
+# into writing anywhere. That closes the class of attack this workflow is most exposed to —
+# the issue body is attacker-controlled text read by a model with shell access to the
+# checkout, and a writable token turns that into a write to this very file on the next run.
+#
+# Note that this token cannot read the target repository's private issues either. That is
+# fine while the target is public; a private target needs a read-only PAT in GITHUB_TOKEN.
 permissions:
   contents: read
-  issues: write
 
-# One run per issue, and never cancel a run in flight. `cancel-in-progress: true` would be
-# actively harmful: the publish tool creates the Doc *before* it comments on the issue, so a
-# cancellation lands in the window where a Doc exists that nobody has been told about.
-# Queueing costs a few minutes; cancelling costs a silently orphaned artefact.
+# Keyed on both repo and issue, since one analyst repo may serve several targets.
 concurrency:
-  group: issue-analyst-${{ github.event.issue.number }}
+  group: issue-analyst-${{ inputs.target_repo }}-${{ inputs.issue_number }}
   cancel-in-progress: false
 
 jobs:
   analyse:
-    # Two guards:
-    #  - Skip bot authors. The agent comments on the issue it analysed, so an agent that
-    #    analysed its own bots' issues is a loop waiting for a second bot to join in.
-    #    (src/tools/analyze-and-publish.ts re-checks `issue.isBot` and returns `skipped`,
-    #    belt and braces, but not spending a runner at all is better.)
-    #  - On `labeled`, only proceed for `needs-analysis`. Without this, every label added to
-    #    every issue forever would trigger a paid analysis run.
-    if: >-
-      github.event.issue.user.type != 'Bot'
-      && !endsWith(github.event.issue.user.login, '[bot]')
-      && (github.event.action == 'opened' || github.event.label.name == 'needs-analysis')
-
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     env:
-      ISSUE_NUMBER: ${{ github.event.issue.number }}
-      # Both legs write the same two paths, so the envelope check below always reads whichever
-      # leg ran last. The primary's own stderr stays visible in its step log; the .log copy is
-      # for a human debugging a failure, nothing asserts on it.
+      ISSUE_NUMBER: ${{ inputs.issue_number }}
+      TARGET_REPOSITORY: ${{ inputs.target_repo || vars.TARGET_REPOSITORY }}
+      # Compared against the string as well as the boolean: a `type: boolean` input arrives
+      # as a real boolean from the UI but as the *string* "false" from the REST API, and a
+      # non-empty string is truthy. `inputs.dry_run && …` alone would silently dry-run every
+      # dispatcher-triggered run.
+      DRY_RUN: ${{ (inputs.dry_run == true || inputs.dry_run == 'true') && '1' || '0' }}
       RUN_JSON: ${{ github.workspace }}/run/agent.json
       RUN_LOG: ${{ github.workspace }}/run/agent.log
+      AGENT_RESULT_JSON: ${{ github.workspace }}/run/result.json
 
     steps:
+      # `workflow_dispatch` inputs are free text and reach a shell command and an API call.
+      # Reject anything malformed before it gets near either.
+      - name: Validate the inputs
+        run: |
+          case "$ISSUE_NUMBER" in
+            ''|*[!0-9]*)
+              echo "::error::issue_number must be digits only." >&2
+              exit 1
+              ;;
+          esac
+          case "$TARGET_REPOSITORY" in
+            '')
+              echo "::error::No target repository. Pass target_repo, or set the TARGET_REPOSITORY variable." >&2
+              exit 1
+              ;;
+            */*/*|/*|*/)
+              echo "::error::target_repo must be exactly owner/repo." >&2
+              exit 1
+              ;;
+            */*) ;;
+            *)
+              echo "::error::target_repo must be owner/repo." >&2
+              exit 1
+              ;;
+          esac
+          echo "Analysing issue #$ISSUE_NUMBER in $TARGET_REPOSITORY (DRY_RUN=$DRY_RUN)."
+
       - name: Check out the repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
@@ -71,25 +106,10 @@ jobs:
       - name: Prepare run directory
         run: mkdir -p "$(dirname "$RUN_JSON")"
 
-      # Recorded before either model leg runs, so the publication check below can ignore
-      # analysis comments left by an earlier run of this same workflow (a re-label, a retry)
-      # and only accept one this run produced.
-      - name: Record the run start time
-        run: echo "RUN_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
-
-      # Fallback lives at the workflow level, not inside the run: `useModel()` is
-      # submission-scoped, and a one-shot CI run is a single submission, so there is no
-      # in-run model swap to be had (DESIGN.md §4). Two processes, two models.
-      #
-      # Model specifiers come from repo *vars*, not secrets: they are not sensitive, and an
-      # operator switching models mid-incident should be able to see and edit the current
-      # value in one click. Specifiers use dots — `github-copilot/claude-opus-4.7`.
-      #
-      # Both legs run through GitHub Copilot and so share one credential,
-      # COPILOT_GITHUB_TOKEN. The fallback buys vendor diversity by model, not by provider:
-      # Copilot's catalog spans four vendors, so a Claude-side outage does not take out both
-      # legs, and there is no second API key to provision, rotate, or leak. `src/env.ts`
-      # rejects any specifier outside the `github-copilot` provider.
+      # The bot-author guard is enforced in the publish tool, which checks `issue.isBot` after
+      # fetching and returns `skipped` (src/tools/analyze-and-publish.ts). It cannot be an
+      # `if:` here because a dispatch carries no issue payload — and putting it only in the
+      # dispatcher would leave manual runs unguarded.
       - name: Analyse (primary model)
         id: primary
         continue-on-error: true
@@ -109,8 +129,11 @@ jobs:
             > "$RUN_JSON" \
             2> >(tee "$RUN_LOG" >&2)
 
-      # A second, clean process with a fresh sandbox. Known cost, accepted in DESIGN.md §4:
-      # a primary that failed *after* creating the Doc leaves a duplicate Doc behind.
+      # Both legs run through GitHub Copilot and so share one credential. The fallback buys
+      # vendor diversity by model, not by provider: Copilot's catalog spans four vendors, so a
+      # Claude-side outage does not take out both legs, and there is no second API key to
+      # provision, rotate, or leak. `src/env.ts` rejects any specifier outside
+      # `github-copilot`.
       - name: Analyse (fallback model)
         id: fallback
         if: steps.primary.outcome == 'failure'
@@ -130,48 +153,40 @@ jobs:
             > "$RUN_JSON" \
             2> >(tee "$RUN_LOG" >&2)
 
-      # REQUIRED. Do not delete this step, and do not make it `continue-on-error`.
+      # This assertion is required, not belt-and-braces: `continue-on-error` on the primary
+      # means nothing else can turn "both legs failed" into a red run.
       #
-      # `continue-on-error: true` on the primary means its failure does not fail the job. If
-      # the fallback also fails, GitHub still needs *something* to mark the job red — and
-      # without this step nothing does. The job would report success having published
-      # nothing, which is the worst outcome in the entire design: nobody is paged, the issue
-      # sits unanalysed, and the green tick actively argues against looking.
+      # Two things get checked, because either alone passes when the run did nothing useful:
       #
-      # Two assertions, because "the process exited 0" is not the same as "an analysis
-      # exists":
-      #   1. The `--json` envelope must say outcome == "completed". The CLI's values are
-      #      completed / failed / aborted / error — there is NO "success" value, and
-      #      asserting on one would silently never match, making this step decorative.
-      #   2. A Doc link must actually be visible on the issue.
-      #
-      # (2) is checked against the GitHub API rather than by grepping the run output, because
-      # the Doc URL never appears in that output: with `--json` the envelope's `message` is
-      # empty when the tool terminates the turn, and the CLI presenter prints only
-      # "tool done analyze_and_publish", never the tool's result payload. The issue comment
-      # the publish tool posts is where publication is actually observable — and it is also
-      # the thing that matters, since it is what the reporter sees.
-      - name: Assert an analysis was published
+      #   1. The --json envelope's outcome is "completed". (Never "success" — that value does
+      #      not exist. The set is completed / failed / aborted / error.)
+      #   2. The result file names a Doc. The envelope alone cannot tell a publish from a dry
+      #      run from a skipped bot issue, and the Doc URL is nowhere else to be found: the
+      #      tool returns `terminate: true` so the envelope's `message` is empty, and the CLI
+      #      presenter prints "tool done analyze_and_publish" without the result payload.
+      #      Since the agent no longer comments on the issue, there is also no API-visible
+      #      artefact to look for. Hence AGENT_RESULT_JSON (src/run-summary.ts).
+      - name: Assert the run completed
         id: assert
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             const fs = require('node:fs');
 
-            let raw = '';
-            try {
-              raw = fs.readFileSync(process.env.RUN_JSON, 'utf8');
-            } catch {
-              /* handled immediately below */
-            }
+            const readOrEmpty = (path) => {
+              try {
+                return fs.readFileSync(path, 'utf8');
+              } catch {
+                return '';
+              }
+            };
 
+            const raw = readOrEmpty(process.env.RUN_JSON);
             if (raw.trim() === '') {
               core.setFailed('No --json envelope was produced: both model legs failed to start.');
               return;
             }
 
-            // With --json the CLI prints exactly one JSON line to stdout; take the last
-            // non-empty line so a stray line from a wrapper cannot break the parse.
             const line = raw.trim().split('\n').filter((l) => l.trim() !== '').pop();
             let envelope;
             try {
@@ -187,53 +202,67 @@ jobs:
               return;
             }
 
-            const issue_number = Number(process.env.ISSUE_NUMBER);
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number,
-              since: process.env.RUN_STARTED_AT,
-              per_page: 100,
-            });
-
-            const published = comments.find((comment) =>
-              /https:\/\/docs\.google\.com\//.test(comment.body ?? ''),
-            );
-
-            if (!published) {
+            const resultRaw = readOrEmpty(process.env.AGENT_RESULT_JSON);
+            if (resultRaw.trim() === '') {
               core.setFailed(
-                'Run outcome was "completed" but no comment containing an analysis Doc link ' +
-                  'appeared on the issue during this run, so nothing was published.',
+                'Run outcome was "completed" but the agent wrote no result file, so it ' +
+                  'reached neither a publish, a dry run, nor a bot skip.',
               );
               return;
             }
 
-            core.info(`Analysis comment published: ${published.html_url}`);
+            let result;
+            try {
+              result = JSON.parse(resultRaw);
+            } catch {
+              core.setFailed('The agent result file was not valid JSON.');
+              return;
+            }
 
-      # Tell the human who filed the issue that the automation broke, rather than leaving
-      # them waiting on a comment that is never coming.
-      #
-      # Loop safety, three ways: this comment is written by github-actions[bot], the workflow
-      # triggers only on `issues: [opened, labeled]` (a comment is neither), and the job's
-      # `if:` skips bot authors. It cannot re-enter. The step is conditioned on the assertion
-      # specifically — not on `failure()` — so an unrelated failure (npm ci, a runner fault)
-      # does not post a misleading "analysis failed" note.
-      - name: Comment that the analysis failed
+            if (result.status === 'skipped') {
+              core.info(`Issue #${result.issueNumber} was filed by a bot and skipped, as intended.`);
+              return;
+            }
+
+            const expected = process.env.DRY_RUN === '1' ? 'dry-run' : 'published';
+            if (result.status !== expected) {
+              core.setFailed(`Agent reported status "${result.status}", expected "${expected}".`);
+              return;
+            }
+
+            if (result.repository !== process.env.TARGET_REPOSITORY) {
+              core.setFailed(
+                `Agent analysed "${result.repository}" but this run targeted ` +
+                  `"${process.env.TARGET_REPOSITORY}".`,
+              );
+              return;
+            }
+
+            if (expected === 'dry-run') {
+              core.info('Dry run completed; nothing was published, as intended.');
+              return;
+            }
+
+            if (!/^https:\/\/docs\.google\.com\//.test(result.docUrl ?? '')) {
+              core.setFailed('Agent reported "published" but with no Google Docs URL.');
+              return;
+            }
+
+            core.info(`Analysis published: ${result.docUrl}`);
+            if (result.injectionSuspected) {
+              core.warning(
+                `The analysis of ${result.repository}#${result.issueNumber} flagged a ` +
+                  'possible prompt-injection attempt. Review the Doc before acting on it.',
+              );
+            }
+
+      # There is no comment-on-failure step: this workflow holds no write permission on any
+      # repository, which is the point. A failure surfaces as a red run here, and the target
+      # repository's dispatcher never hears back — so if silent failure is unacceptable, the
+      # place to add notification is Discord, using the webhook this repo already holds.
+      - name: Show the run log on failure
         if: always() && steps.assert.outcome == 'failure'
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
-        with:
-          script: |
-            const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: Number(process.env.ISSUE_NUMBER),
-              body: [
-                'Automated analysis failed for this issue, so no analysis Doc was produced.',
-                '',
-                `A maintainer can inspect the [workflow run](${url}) and re-run the analysis with the`,
-                '`issue-analyst-manual` workflow, or by adding the `needs-analysis` label.',
-                '',
-                '_This note is automated; the issue itself has not been triaged yet._',
-              ].join('\n'),
-            });
+        run: |
+          echo "::group::agent stderr"
+          tail -n 200 "$RUN_LOG" 2>/dev/null || echo '(no log)'
+          echo "::endgroup::"

@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Analysis } from '../src/schema/analysis.ts';
 import type { Issue } from '../src/integrations/github.ts';
-import {
-  docTitle,
-  renderAnalysisMarkdown,
-  renderDiscordSummary,
-  renderIssueComment,
-} from '../src/render.ts';
+import { docTitle, renderAnalysisMarkdown, renderDiscordSummary } from '../src/render.ts';
 
 function issue(overrides: Partial<Issue> = {}): Issue {
   return {
@@ -141,58 +136,6 @@ describe('renderAnalysisMarkdown', () => {
     const out = renderAnalysisMarkdown(analysis(), issue({ title: '@here <b>fix now</b>' }));
     expect(out).not.toContain('@here');
     expect(out).not.toContain('<b>');
-  });
-});
-
-describe('renderIssueComment', () => {
-  const docUrl = 'https://docs.google.com/document/d/abc123/edit';
-
-  it('points at the Doc instead of reproducing the analysis', () => {
-    const model = analysis();
-    const out = renderIssueComment(model, docUrl);
-    expect(out).toContain(docUrl);
-    expect(out).toContain('### Automated analysis');
-    expect(out).toContain('bug');
-    expect(out).toContain('severity **High**');
-    expect(out).toContain('confidence medium');
-    // A pointer, not a copy: none of the body sections are reproduced.
-    for (const absent of [
-      '## Classification',
-      '## Affected components',
-      '## Root-cause hypotheses',
-      '## Open questions',
-      model.severityRationale,
-      model.rootCauseHypotheses[0] as string,
-      model.suggestedActions[0] as string,
-      model.openQuestions[0] as string,
-      model.affectedComponents[0] as string,
-    ]) {
-      expect(out, `should not contain ${absent}`).not.toContain(absent);
-    }
-    expect(out.length).toBeLessThan(renderAnalysisMarkdown(model, issue()).length);
-  });
-
-  it('caps the quoted summary at 600 characters', () => {
-    const out = renderIssueComment(analysis({ summary: 'word '.repeat(300).trim() }), docUrl);
-    const quoted = out.split('\n').find((line) => line.startsWith('word ')) ?? '';
-    expect(quoted.length).toBeLessThanOrEqual(601);
-    expect(quoted.endsWith('…')).toBe(true);
-  });
-
-  it('flags a suspected injection for manual review', () => {
-    const out = renderIssueComment(analysis({ injectionSuspected: true }), docUrl);
-    expect(out).toContain('flagged for manual review');
-    expect(renderIssueComment(analysis(), docUrl)).not.toContain('flagged for manual review');
-  });
-
-  it('sanitises the summary it quotes', () => {
-    const out = renderIssueComment(
-      analysis({ summary: '@everyone <!-- leak --> http://evil.example' }),
-      docUrl,
-    );
-    expect(out).not.toContain('@everyone');
-    expect(out).not.toContain('<!--');
-    expect(out).toContain('link not followed');
   });
 });
 

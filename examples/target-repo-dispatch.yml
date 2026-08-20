@@ -1,0 +1,76 @@
+# ---------------------------------------------------------------------------------------
+# COPY THIS FILE into the repository whose issues you want analysed — for example
+# aaif/project-proposals — at:
+#
+#     .github/workflows/request-issue-analysis.yml
+#
+# It does not run from this repository. It lives here so it is version-controlled next to
+# the workflow it triggers, because the two have to agree on the input names.
+#
+# Then, in the *target* repository, add one secret:
+#
+#     ANALYST_DISPATCH_TOKEN — a fine-grained PAT with, on aaif/flue-issue-analyst only,
+#                              Actions: read and write. Nothing else. See docs/secrets.md.
+#
+# Why `Actions: write` and not a `repository_dispatch`: triggering a workflow_dispatch needs
+# only the Actions permission, whereas repository_dispatch requires Contents: write on the
+# analyst repo — and Contents: write is a push, which is a rewrite of the analyst's own
+# workflow files, which is arbitrary code execution with every secret the analyst holds. The
+# narrower permission is worth the slightly fussier API call.
+# ---------------------------------------------------------------------------------------
+
+name: Request issue analysis
+
+on:
+  issues:
+    # `opened` gives you analysis on every new issue, which is what you usually want.
+    #
+    # If this repository is public, read this before leaving `opened` in: anyone can file an
+    # issue, so anyone can spend model budget and put text of their choosing in front of the
+    # model. Deleting `opened` and keeping `labeled` makes analysis maintainer-initiated —
+    # nothing runs until someone applies the `needs-analysis` label. That is the safer
+    # setting, and the only cost is one click per issue.
+    types: [opened, labeled]
+
+# This workflow uses the PAT below for the one API call it makes and never needs the run's own
+# token, so it is granted nothing at all.
+permissions: {}
+
+jobs:
+  request:
+    # `labeled` fires for every label, so it is filtered to the one that means "analyse this".
+    # Bot-filed issues are skipped here to avoid spending a dispatch on them; the analyst
+    # checks again after fetching, so a manual dispatch is guarded too.
+    if: >-
+      github.event.issue.user.type != 'Bot' &&
+      (github.event.action == 'opened' || github.event.label.name == 'needs-analysis')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Ask the analyst repository to analyse this issue
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          github-token: ${{ secrets.ANALYST_DISPATCH_TOKEN }}
+          script: |
+            // Inputs are strings over the REST API even where the workflow declares a
+            // boolean; the receiving workflow compares against both forms.
+            await github.rest.actions.createWorkflowDispatch({
+              owner: 'aaif',
+              repo: 'flue-issue-analyst',
+              workflow_id: 'issue-analyst.yml',
+              ref: 'main',
+              inputs: {
+                issue_number: String(context.payload.issue.number),
+                target_repo: `${context.repo.owner}/${context.repo.repo}`,
+                dry_run: 'false',
+              },
+            });
+
+            // A dispatch returns 204 with no body, so there is no run id to link to and no
+            // way to wait for a result: this workflow's success means "asked", not
+            // "analysed". Watch the analyst repository's Actions tab for the outcome.
+            core.info(
+              `Requested analysis of ${context.repo.owner}/${context.repo.repo}#` +
+                `${context.payload.issue.number}.`,
+            );

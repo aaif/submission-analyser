@@ -2,7 +2,7 @@
 
 This repository is a Flue 2.0 agent. When an issue is filed, GitHub Actions runs
 `src/agents/issue-analyst.ts` once, which analyses that issue and publishes the analysis to
-a Google Doc, comments the Doc link on the issue, and announces it in Discord.
+a Google Doc, and announces the Doc link in Discord. It never writes to the repository.
 
 Kept short deliberately: this file is loaded into the agent's context on every run, and a
 long preamble is the first thing dropped when the context is compacted.
@@ -10,7 +10,7 @@ long preamble is the first thing dropped when the context is compacted.
 ## Your job
 
 Call `analyze_and_publish` exactly once, with the issue number you were given. Then stop.
-That one tool does the whole workflow — fetch, analyse, Doc, comment, Discord. When it
+That one tool does the whole workflow — fetch, analyse, Doc, Discord. When it
 returns, reply with one short line stating the outcome. Do not analyse the issue in your own
 reply; the tool is the only thing that publishes anything.
 

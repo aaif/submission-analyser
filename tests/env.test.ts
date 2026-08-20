@@ -5,7 +5,7 @@ import {
   FAUX_MODEL,
   discordWebhookUrl,
   flag,
-  githubRepo,
+  targetRepo,
   githubToken,
   googleDriveFolderId,
   googleServiceAccount,
@@ -105,14 +105,29 @@ describe('env', () => {
     });
   });
 
-  describe('githubRepo', () => {
+  describe('targetRepo', () => {
     it('splits owner/repo', () => {
       process.env['GITHUB_REPOSITORY'] = 'acme/widget';
-      expect(githubRepo()).toEqual({ owner: 'acme', repo: 'widget' });
+      expect(targetRepo()).toEqual({ owner: 'acme', repo: 'widget' });
+    });
+
+    // The whole point of the variable: the repo being analysed is not the repo the workflow
+    // runs in, and falling back silently to GITHUB_REPOSITORY would analyse the wrong issue
+    // while reporting success.
+    it('prefers TARGET_REPOSITORY over the repo the workflow runs in', () => {
+      process.env['GITHUB_REPOSITORY'] = 'aaif/flue-issue-analyst';
+      process.env['TARGET_REPOSITORY'] = 'aaif/project-proposals';
+      expect(targetRepo()).toEqual({ owner: 'aaif', repo: 'project-proposals' });
+    });
+
+    it('falls back to GITHUB_REPOSITORY when TARGET_REPOSITORY is unset or blank', () => {
+      process.env['GITHUB_REPOSITORY'] = 'acme/widget';
+      process.env['TARGET_REPOSITORY'] = '   ';
+      expect(targetRepo()).toEqual({ owner: 'acme', repo: 'widget' });
     });
 
     it('names the variable when it is missing', () => {
-      const error = thrown(githubRepo);
+      const error = thrown(targetRepo);
       expect(error).toBeInstanceOf(EnvError);
       expect((error as EnvError).message).toContain('GITHUB_REPOSITORY');
     });
@@ -120,17 +135,28 @@ describe('env', () => {
     it('rejects a value without a slash, and other malformed slugs', () => {
       for (const value of ['acme', 'acme/', '/widget', 'acme/widget/extra', '/']) {
         process.env['GITHUB_REPOSITORY'] = value;
-        const error = thrown(githubRepo);
+        const error = thrown(targetRepo);
         expect(error, value).toBeInstanceOf(EnvError);
         expect((error as EnvError).message).toContain('GITHUB_REPOSITORY');
       }
+    });
+
+    // The error has to name the variable that actually holds the bad value, or an operator
+    // goes and checks the wrong one.
+    it('blames TARGET_REPOSITORY when that is the malformed one', () => {
+      process.env['GITHUB_REPOSITORY'] = 'acme/widget';
+      process.env['TARGET_REPOSITORY'] = 'not-a-slug';
+      const error = thrown(targetRepo);
+      expect(error).toBeInstanceOf(EnvError);
+      expect((error as EnvError).message).toContain('TARGET_REPOSITORY');
+      expect((error as EnvError).message).not.toContain('GITHUB_REPOSITORY');
     });
 
     it('echoes the offending slug, which is public rather than a credential', () => {
       // Deliberate asymmetry with the secret-bearing vars below: a repository slug is safe
       // to quote and quoting it is what makes the misconfiguration diagnosable.
       process.env['GITHUB_REPOSITORY'] = 'not-a-slug';
-      expect((thrown(githubRepo) as EnvError).message).toContain('not-a-slug');
+      expect((thrown(targetRepo) as EnvError).message).toContain('not-a-slug');
     });
   });
 

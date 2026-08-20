@@ -10,13 +10,11 @@ import { publishDeps, type PublishDeps } from '../../src/tools/analyze-and-publi
 import { SAMPLE_ISSUE } from '../../src/faux.ts';
 import type { Issue } from '../../src/integrations/github.ts';
 import type { CreateDocInput } from '../../src/schema/integrations.ts';
-import type { CommentInput } from '../../src/schema/integrations.ts';
 import type { DiscordPostInput } from '../../src/schema/integrations.ts';
 
 export interface PublishRecord {
   fetched: Array<{ owner: string; repo: string; issueNumber: number }>;
   docs: CreateDocInput[];
-  comments: CommentInput[];
   discord: DiscordPostInput[];
   /** Every side effect in the order it happened, for cross-integration ordering assertions. */
   order: string[];
@@ -25,10 +23,8 @@ export interface PublishRecord {
 export interface RecordingDepsOptions {
   issue?: Partial<Issue>;
   docUrl?: string;
-  commentUrl?: string;
   /** Thrown by the corresponding fake instead of succeeding. */
   failDoc?: Error;
-  failComment?: Error;
   failDiscord?: Error;
 }
 
@@ -39,7 +35,7 @@ export interface InstalledDeps {
 
 export function installRecordingDeps(options: RecordingDepsOptions = {}): InstalledDeps {
   const original: PublishDeps = { ...publishDeps };
-  const record: PublishRecord = { fetched: [], docs: [], comments: [], discord: [], order: [] };
+  const record: PublishRecord = { fetched: [], docs: [], discord: [], order: [] };
   const issue: Issue = { ...SAMPLE_ISSUE, ...options.issue };
 
   publishDeps.resolveFolderId = () => 'test-drive-folder';
@@ -56,15 +52,6 @@ export function installRecordingDeps(options: RecordingDepsOptions = {}): Instal
     if (options.failDoc) throw options.failDoc;
     const url = options.docUrl ?? 'https://docs.google.com/document/d/test-doc/edit';
     return { id: 'test-doc', url };
-  };
-
-  publishDeps.commentOnIssue = async (input) => {
-    record.comments.push(input as CommentInput);
-    record.order.push('commentOnIssue');
-    if (options.failComment) throw options.failComment;
-    return {
-      url: options.commentUrl ?? 'https://github.com/acme/widget/issues/1#issuecomment-99',
-    };
   };
 
   publishDeps.postToDiscord = async (input) => {

@@ -6,7 +6,7 @@
 # ---------------------------------------------------------------------------------------
 # A tag like `actions/checkout@v5` is a mutable pointer. Whoever can move that tag can
 # change the code that runs inside .github/workflows/issue-analyst.yml, and that workflow
-# holds an `issues: write` token and is handed the Copilot, Google and Discord credentials.
+# is handed the Copilot, Google and Discord credentials.
 # A moved tag is therefore a supply-chain write into a privileged job. A commit SHA is
 # immutable, so an upgrade becomes a reviewable diff instead of something that happens to
 # us. The version in the trailing comment is documentation only — the SHA is the contract.

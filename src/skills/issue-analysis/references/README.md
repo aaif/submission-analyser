@@ -35,5 +35,6 @@ components: [src/queue/consumer.ts]
 prefer the words a future reporter would actually use.
 
 **Audit before committing.** These files are read into model context and their conclusions
-are quoted into public issue comments. Do not include customer names, internal hostnames,
+are quoted into the published analysis and its Discord summary. Do not include customer
+names, internal hostnames,
 credentials, unannounced roadmap detail, or anything from a private security embargo.

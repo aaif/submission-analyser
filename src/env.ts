@@ -62,14 +62,31 @@ export interface RepoRef {
   repo: string;
 }
 
-export function githubRepo(): RepoRef {
-  const value = require_('GITHUB_REPOSITORY');
+function parseRepo(name: string, value: string): RepoRef {
   const parts = value.split('/');
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
     // Safe to echo: a repository slug is public, not a credential.
-    throw new EnvError(`GITHUB_REPOSITORY must be "owner/repo", got "${value}".`);
+    throw new EnvError(`${name} must be "owner/repo", got "${value}".`);
   }
   return { owner: parts[0], repo: parts[1] };
+}
+
+/**
+ * The repository whose issues get analysed — which is deliberately *not* assumed to be the
+ * repository the workflow runs in.
+ *
+ * `GITHUB_REPOSITORY` is set by Actions to the repo hosting the workflow. This agent is
+ * designed to run from its own tooling repo and analyse issues filed elsewhere, so reading
+ * `GITHUB_REPOSITORY` alone would fetch issue #N of the *analyst* repo: a run that succeeds,
+ * publishes a Doc, and analyses entirely the wrong issue. Silent and plausible is the worst
+ * failure shape available here, so the target is named explicitly by `TARGET_REPOSITORY`.
+ *
+ * The fallback to `GITHUB_REPOSITORY` keeps single-repo and local use working unchanged.
+ */
+export function targetRepo(): RepoRef {
+  const explicit = read('TARGET_REPOSITORY');
+  if (explicit !== undefined) return parseRepo('TARGET_REPOSITORY', explicit);
+  return parseRepo('GITHUB_REPOSITORY', require_('GITHUB_REPOSITORY'));
 }
 
 /** Actions provides `GITHUB_TOKEN`; the `gh` CLI convention is `GH_TOKEN`. Accept either. */
@@ -198,7 +215,7 @@ export function requireModelCredential(specifier: string): void {
  */
 export function preflight(options: { dryRun?: boolean } = {}): void {
   const dryRun = options.dryRun ?? isDryRun();
-  githubRepo();
+  targetRepo();
   githubToken();
   requireModelCredential(modelSpecifier());
   // Under FLUE_FAUX every egress call is replaced by an in-memory fake (src/faux.ts), so

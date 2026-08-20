@@ -45,6 +45,7 @@ export const NO_CREDENTIALS: EnvOverlay = {
   ANTHROPIC_API_KEY: undefined,
   OPENAI_API_KEY: undefined,
   GITHUB_REPOSITORY: undefined,
+  TARGET_REPOSITORY: undefined,
   DRY_RUN: undefined,
   FLUE_FAUX: undefined,
   FLUE_MODEL: undefined,

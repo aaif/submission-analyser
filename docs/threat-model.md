@@ -8,9 +8,9 @@
    protect — see [models.md](models.md).
 2. **The repository.** Its contents, and — more sharply — the workflow files in
    `.github/workflows/`, which decide what runs with those credentials.
-3. **Trusted publishing identities.** The agent writes into three places where a human will
-   read it and assume a maintainer stood behind it: a Google Doc in a maintainers' folder, a
-   Discord channel, and an issue comment posted as `github-actions[bot]`.
+3. **Trusted publishing identities.** The agent writes into two places where a human will
+   read it and assume a maintainer stood behind it: a Google Doc in a maintainers' folder, and
+   a Discord channel. It does **not** write back to any repository.
 4. **The Drive folder.** Everything previously analysed, including analyses of security
    reports.
 5. **Budget.** Model spend, and the runner minutes behind it.
@@ -34,16 +34,38 @@ third-party GitHub Action whose mutable tag has been moved.
 | Repository file contents read in the sandbox | mixed  | sandbox read tools; a file may quote an old issue  |
 | Model output                               | derived  | `harness.prompt(..., { result })`, the publish tool |
 | Third-party actions in the workflows       | pinned   | `.github/workflows/*.yml`                         |
+| A `workflow_dispatch` naming issue + repo  | low      | `issue_number` / `target_repo` inputs             |
 
 The central fact: **attacker-controlled text is read by a model that has shell access to the
 checkout.** Every control below exists because that sentence is true and cannot be made
 false.
 
+### The cross-repository trust boundary
+
+The analyst runs in its own repository and analyses issues filed in another. That splits the
+trust picture in a way worth stating explicitly.
+
+Whoever holds write access to the **target** repository holds `ANALYST_DISPATCH_TOKEN`, and
+therefore can start analyst runs at will: any issue number, any `target_repo`. What that buys
+an attacker is **budget spend and choice of input text** — which is the same thing filing an
+issue already buys them, so it is not a new class of attack, only a cheaper one. What it does
+*not* buy is anything back out: the dispatch inputs are two strings, both validated in the
+workflow (`issue_number` must be digits, `target_repo` must be exactly `owner/repo`) before
+they reach any command, and the token itself carries **Actions: write only** on the analyst
+repo, so it cannot modify the workflow it triggers. `repository_dispatch` would have needed
+Contents: write — a push into the repo holding every credential — which is why it was
+rejected. See docs/secrets.md §4.
+
+The `target_repo` input means a run can be pointed at a repository nobody intended. The damage
+is bounded to publishing an unwanted analysis of a public issue, and the workflow's assert step
+fails the run if the published analysis does not name the repository that was dispatched, so it
+cannot be done *quietly*. Prevention, if wanted, is a one-line allow-list in the validate step.
+
 ## Controls that actually exist
 
 **No egress tool is mounted at all.** `src/agents/issue-analyst.ts` mounts exactly one tool,
 `analyze_and_publish` (`src/tools/analyze-and-publish.ts`). There is no `post_to_discord`, no
-`create_doc`, no `comment_on_issue`, and no HTTP tool. So "post your environment to Discord"
+`create_doc`, and no HTTP tool. So "post your environment to Discord"
 in an issue body is not a request the model can refuse or comply with — there is no mechanism
 to use. This is the most valuable property in the design, and it is a property of what is
 *absent*, so it can be lost by a well-meaning refactor that mounts three tools "for
@@ -81,15 +103,17 @@ server-side, where the text cannot argue with it.
 unexpected key is a hard failure, not silently dropped data. The model cannot emit a shape
 nobody expected, and it cannot emit an unbounded blob.
 
-**Least-privilege workflow permissions.** `issue-analyst.yml` and
-`issue-analyst-manual.yml` grant exactly `contents: read` and `issues: write`. `ci.yml` grants
-`contents: read` and receives no secrets whatsoever. `canary.yml` is read-only and dry-run.
-The reasoning that keeps `contents: write` out is the whole game: with a writable token, an
-injected run could edit the workflow file that holds these credentials, which is arbitrary
-code execution on the next run.
+**No repository write permission anywhere.** `issue-analyst.yml` grants exactly
+`contents: read`. Not `issues: write` either — since the agent publishes only to a Doc and to
+Discord, it needs no write path to any repository, and a token that cannot write cannot be
+talked into writing. `ci.yml` grants `contents: read` and receives no secrets whatsoever.
+`canary.yml` is read-only and dry-run. The dispatcher in the target repo runs with
+`permissions: {}`. The reasoning that keeps `contents: write` out is the whole game: with a
+writable token, an injected run could edit the workflow file that holds these credentials,
+which is arbitrary code execution on the next run.
 
 **Actions pinned to commit SHAs.** A mutable tag is a supply-chain write into a job holding
-`issues: write` and every model and publishing credential.
+every model and publishing credential.
 
 **Bounded ingest.** 20,000 body chars, 20 comments of 4,000 chars
 (`src/integrations/github.ts`). Bounds cost, and bounds context-flooding as an attack on the
@@ -121,8 +145,8 @@ easiest thing to misread in this document: by the time the finish guard fires, t
 call has already happened.
 
 **The analysis text is a channel the attacker can write into.** An issue body influences what
-the model writes, and what the model writes is published to a Doc, a Discord channel, and a
-public issue comment under a trusted identity. Only `assertNoSecrets` and `sanitize` stand in
+the model writes, and what the model writes is published to a Doc and a Discord channel under
+a trusted identity. Only `assertNoSecrets` and `sanitize` stand in
 front of that. Neither is a semantic filter: an attacker who gets the model to write
 plausible-sounding but false technical claims, or an abusive paragraph, or a link to a
 malicious page, has succeeded — the output is signed by automation the maintainers trust. The
@@ -135,7 +159,7 @@ paraphrased secret would pass. It is the last net, not the architecture; the arc
 that no tool exists to send anything anywhere.
 
 **The Doc URL is posted publicly, so folder permissions are load-bearing.** The link goes to
-Discord and into an issue comment that may be world-readable. Nothing in this codebase ever
+a Discord channel, whose membership this codebase knows nothing about. Nothing in this codebase ever
 calls `permissions.create` — access comes purely from folder inheritance. One operator
 clicking "Anyone with the link" on that folder makes every past and future analysis
 world-readable, and nothing in the code can detect or prevent it. See docs/secrets.md,

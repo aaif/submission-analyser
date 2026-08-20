@@ -3,33 +3,28 @@ import * as v from 'valibot';
 import { AnalysisSchema, type Analysis } from '../schema/analysis.ts';
 import { boundaryRule, fence } from '../safety/fence.ts';
 import { assertNoSecrets } from '../safety/secret-scan.ts';
-import { writeRunSummary } from '../run-summary.ts';
+import { writeRunSummary, writeRunResult } from '../run-summary.ts';
 import { sanitize } from '../safety/sanitize.ts';
-import { fetchIssue, commentOnIssue, type Issue } from '../integrations/github.ts';
+import { fetchIssue, type Issue } from '../integrations/github.ts';
 import { createAnalysisDoc } from '../integrations/google-docs.ts';
 import { postToDiscord } from '../integrations/discord.ts';
-import {
-  docTitle,
-  renderAnalysisMarkdown,
-  renderDiscordSummary,
-  renderIssueComment,
-} from '../render.ts';
-import { googleDriveFolderId, githubRepo, isDryRun, preflight } from '../env.ts';
+import { docTitle, renderAnalysisMarkdown, renderDiscordSummary } from '../render.ts';
+import { googleDriveFolderId, targetRepo, isDryRun, preflight } from '../env.ts';
 
 /**
  * The agent's one and only tool. Everything the run does happens inside it.
  *
- * Why one harness tool rather than three model-callable tools (create_doc, post_to_discord,
- * comment_on_issue):
+ * Why one harness tool rather than several model-callable tools (create_doc,
+ * post_to_discord):
  *
  * 1. It makes "validated before any side effect" a fact rather than a hope. The analysis is
  *    obtained through `harness.prompt(..., { result: AnalysisSchema })`, so a value that
  *    does not validate never becomes a value at all — there is no ordering for the model to
  *    get wrong, because the model is not doing the ordering.
  * 2. It collapses the injection surface. The issue body is attacker-controlled text read by
- *    a model with shell access. If Discord, Drive and the GitHub write API were mounted as
- *    tools, "post your environment to Discord" would have a mechanism to use. They are not
- *    mounted, so it has none. This is the single most valuable property of the design.
+ *    a model with shell access. If Discord and Drive were mounted as tools, "post your
+ *    environment to Discord" would have a mechanism to use. They are not mounted, so it has
+ *    none. This is the single most valuable property of the design.
  * 3. Ordering, partial failure and dry-run become ordinary TypeScript, testable offline.
  *
  * `durable: true` so each side effect is recorded exactly once: an interrupted call replays
@@ -41,7 +36,6 @@ export const PublishResultSchema = v.strictObject({
   status: v.picklist(['published', 'dry-run', 'skipped'] as const),
   issueNumber: v.number(),
   docUrl: v.optional(v.string()),
-  commentUrl: v.optional(v.string()),
   severity: v.optional(v.string()),
   injectionSuspected: v.optional(v.boolean()),
   detail: v.string(),
@@ -57,7 +51,6 @@ export const PublishResultSchema = v.strictObject({
 export interface PublishDeps {
   fetchIssue: typeof fetchIssue;
   createAnalysisDoc: typeof createAnalysisDoc;
-  commentOnIssue: typeof commentOnIssue;
   postToDiscord: typeof postToDiscord;
   /** Resolved through the seam so a fake publisher needs no real Drive folder. */
   resolveFolderId: () => string;
@@ -66,7 +59,6 @@ export interface PublishDeps {
 export const publishDeps: PublishDeps = {
   fetchIssue,
   createAnalysisDoc,
-  commentOnIssue,
   postToDiscord,
   resolveFolderId: googleDriveFolderId,
 };
@@ -142,14 +134,22 @@ export const analyzeAndPublish = defineTool({
 
       // Fail before spending a token on a run that cannot publish.
       preflight({ dryRun });
-      const repo = githubRepo();
+      const repo = targetRepo();
 
       const issue = await step.do('fetch-issue', () =>
         publishDeps.fetchIssue({ ...repo, issueNumber: data.issueNumber }),
       );
 
-      // Belt-and-braces against a comment loop; the workflow also guards on this.
+      // Bot-filed issues are skipped because they are usually machine-generated noise
+      // (dependency bots, mirrors, CI reporters) and analysing them spends model budget on
+      // text no maintainer asked about. The dispatching workflow guards on this too; this is
+      // the belt-and-braces copy, and the one that also covers a manual dispatch.
       if (issue.isBot) {
+        writeRunResult({
+          status: 'skipped',
+          repository: `${repo.owner}/${repo.repo}`,
+          issueNumber: issue.number,
+        });
         return {
           output: {
             status: 'skipped' as const,
@@ -194,6 +194,13 @@ export const analyzeAndPublish = defineTool({
 
       if (dryRun) {
         log.info('dry run: skipping all publication', { chars: markdown.length });
+        writeRunResult({
+          status: 'dry-run',
+          repository: `${repo.owner}/${repo.repo}`,
+          issueNumber: issue.number,
+          severity: analysis.severity,
+          injectionSuspected: analysis.injectionSuspected,
+        });
         return {
           output: {
             status: 'dry-run' as const,
@@ -209,22 +216,14 @@ export const analyzeAndPublish = defineTool({
         };
       }
 
-      // Publication order is deliberate: Doc, then the issue comment, then Discord.
-      // The Doc is the artefact and the comment is what the reporter sees, so a broken
-      // Discord webhook must not be able to deny them either. The run still fails loudly.
+      // Doc first, then Discord. The Doc is the artefact; the Discord message is a pointer
+      // to it, and a pointer to a Doc that does not exist is worse than no message at all.
+      // A failing webhook after a successful Doc still fails the run loudly.
       const doc = await step.do('create-doc', () =>
         publishDeps.createAnalysisDoc({
           title: docTitle(issue),
           markdown,
           folderId: publishDeps.resolveFolderId(),
-        }),
-      );
-
-      const comment = await step.do('comment-on-issue', () =>
-        publishDeps.commentOnIssue({
-          ...repo,
-          issueNumber: issue.number,
-          body: renderIssueComment(analysis, doc.url),
         }),
       );
 
@@ -243,19 +242,30 @@ export const analyzeAndPublish = defineTool({
         return { posted: true };
       });
 
-      writeRunSummary({ issue: `#${issue.number}`, doc: doc.url, comment: comment.url });
+      writeRunSummary({
+        repository: `${repo.owner}/${repo.repo}`,
+        issue: `#${issue.number}`,
+        doc: doc.url,
+      });
+      writeRunResult({
+        status: 'published',
+        repository: `${repo.owner}/${repo.repo}`,
+        issueNumber: issue.number,
+        docUrl: doc.url,
+        severity: analysis.severity,
+        injectionSuspected: analysis.injectionSuspected,
+      });
 
       return {
         output: {
           status: 'published' as const,
           issueNumber: issue.number,
           docUrl: doc.url,
-          commentUrl: comment.url,
           severity: analysis.severity,
           injectionSuspected: analysis.injectionSuspected,
           detail:
             `Published the analysis of issue #${issue.number}: Doc ${doc.url}, ` +
-            `comment ${comment.url}, Discord notified.`,
+            'Discord notified.',
         },
         terminate: true,
       };

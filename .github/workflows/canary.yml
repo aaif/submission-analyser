@@ -55,6 +55,10 @@ jobs:
       # A stable, closed, boring issue to analyse. Set the CANARY_ISSUE_NUMBER repo variable;
       # 1 is only a placeholder so a fresh clone does something rather than nothing.
       ISSUE_NUMBER: ${{ vars.CANARY_ISSUE_NUMBER || '1' }}
+      # The canary reads the same target repository as a real run, so an issue-fetch problem
+      # (a renamed repo, a token that cannot see it) shows up here first. Falls back to this
+      # repo when TARGET_REPOSITORY is unset, which keeps a fresh clone working.
+      TARGET_REPOSITORY: ${{ vars.TARGET_REPOSITORY }}
       RUN_JSON: ${{ github.workspace }}/run/agent.json
 
     steps:

@@ -20,7 +20,12 @@ An agent, run as a GitHub Action, that responds to newly filed issues by:
 1. Analyzing the issue against repository context and prior hand-written reviews.
 2. Writing the analysis to a Google Doc.
 3. Posting the Doc link to a Discord channel.
-4. Commenting on the originating issue with the link.
+4. ~~Commenting on the originating issue with the link.~~ **[dropped]** — the Doc plus the Discord
+   message is the whole output. Dropping this is the reason the agent needs no write permission on
+   any repository at all (see §5), which removes the injection-plus-writable-token path outright.
+
+The issues being analysed are **not** assumed to live in the repository hosting the workflow: the
+agent runs from its own tooling repo and reads a target named by `TARGET_REPOSITORY` (see §4).
 
 This is the first user of a reusable Flue scaffold we expect to extend with more agents.
 
@@ -43,10 +48,12 @@ This is the first user of a reusable Flue scaffold we expect to extend with more
 ## Architecture
 
 ```
-Issue opened
+Issue opened in the target repo (e.g. aaif/project-proposals)
+   │
+   ▼  its .github/workflows/request-issue-analysis.yml → workflow_dispatch
    │
    ▼
-.github/workflows/issue-analyst.yml
+.github/workflows/issue-analyst.yml  (this repo)
    │  npx flue run src/agents/issue-analyst.ts --message "Analyze issue #123" --json
    ▼
 ┌──────────────────────────────────────────────────────────┐
@@ -74,7 +81,7 @@ Issue opened
 └──────────────────────────────────────────────────────────┘
    │              │                  │
    ▼              ▼                  ▼
-Google Doc  →  issue comment  →  Discord webhook
+Google Doc  →  Discord webhook
 ```
 
 The model calls exactly one tool. Every egress is plain TypeScript downstream of a validated
@@ -112,7 +119,8 @@ Flue 2.0 has no mandated `.flue/` directory for CLI-run agents. `flue run` takes
 │   ├── render.ts                     # AnalysisSchema -> markdown (deterministic)
 │   └── faux.ts                       # credential-free fake model, gated on FLUE_FAUX=1
 ├── tests/                            # schema, safety, render, env, integrations, tool
-├── .github/workflows/                # ci, issue-analyst, issue-analyst-manual, canary
+├── .github/workflows/                # ci, issue-analyst (workflow_dispatch), canary
+├── examples/target-repo-dispatch.yml  # copied into the TARGET repo, not run from here
 ├── scripts/smoke-{docs,discord,github}.ts
 ├── docs/{secrets,models,threat-model}.md
 ├── AGENTS.md
@@ -156,7 +164,7 @@ Three decisions in that block depart from the earlier draft. All three are delib
 4.4 and open question 2, in the opposite direction to what TODO 4.4 suggested trying first. The
 reason is the failure shape, not the ergonomics: a malformed workspace `SKILL.md` is **skipped with a
 warning**. In headless CI that means the agent still runs, still creates a Doc, still posts to
-Discord, still comments on the issue — with an ungrounded analysis and a green check mark. Nobody
+Discord — with an ungrounded analysis and a green check mark. Nobody
 looks at a green run. A static import fails at load, before any model call or side effect, with a
 message naming the problem and **exit code 1** (verified: malformed frontmatter yields
 `{"outcome":"error", ... "must define frontmatter description as a non-empty string."}`). Secondary
@@ -246,14 +254,14 @@ So fallback moves up a level, to the workflow:
   env:
     FLUE_MODEL: ${{ vars.PRIMARY_MODEL }}    # github-copilot/claude-opus-4.7
     COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-  run: npx flue run src/agents/issue-analyst.ts --message "Analyze issue #${{ github.event.issue.number }}" --json | tee result.json
+  run: npx flue run src/agents/issue-analyst.ts --message "Analyze issue #$ISSUE_NUMBER" --json | tee result.json
 
 - name: Run agent (fallback)
   if: steps.primary.outcome == 'failure'
   env:
     FLUE_MODEL: ${{ vars.FALLBACK_MODEL }}   # github-copilot/gpt-5.4
     COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-  run: npx flue run src/agents/issue-analyst.ts --message "Analyze issue #${{ github.event.issue.number }}" --json | tee result.json
+  run: npx flue run src/agents/issue-analyst.ts --message "Analyze issue #$ISSUE_NUMBER" --json | tee result.json
 ```
 
 Both legs share the one model credential, because both models are served by Copilot. The diversity
@@ -278,11 +286,56 @@ fresh-process fallback that can.
 conditional `useModel`, which takes effect on the next submission. That suits long-lived conversational
 agents, not one-shot CI jobs.
 
+### 4b. Trigger and target repository — **[corrected: the trigger is not `on: issues`]**
+
+The original design assumed `on: issues: [opened]` in this repository. That only works if the issues
+being analysed are filed *here*. They are not: this agent lives in its own tooling repo (e.g.
+`aaif/flue-issue-analyst`) and analyses issues filed in a separate content repo (e.g.
+`aaif/project-proposals`). Two GitHub facts make the original shape unbuildable:
+
+- **Workflow events are repository-local.** `on: issues` fires only for issues in the repository
+  hosting the workflow. There is no cross-repo subscription.
+- **`secrets.GITHUB_TOKEN` is scoped to the running repository.** Even with a trigger, the automatic
+  token cannot read the other repo.
+
+So the design splits in two:
+
+1. **This repo's workflow is `workflow_dispatch`-only**, with inputs `issue_number`, `target_repo` and
+   `dry_run`. One file serves both the automatic path and a maintainer clicking "Run workflow", so
+   there is no second workflow to drift out of sync. `TARGET_REPOSITORY` (a repo variable, overridable
+   per dispatch) names the repo to read; `src/env.ts` deliberately does **not** fall back to
+   `GITHUB_REPOSITORY` silently for a cross-repo setup, because reading the analyst repo's own issue
+   #N would produce a run that succeeds, publishes a Doc, and analysed entirely the wrong text.
+2. **The target repo gets one small dispatcher workflow**
+   ([`examples/target-repo-dispatch.yml`](examples/target-repo-dispatch.yml)), on
+   `issues: [opened, labeled]`, `permissions: {}`, whose only step calls
+   `actions.createWorkflowDispatch` against this repo.
+
+**`workflow_dispatch`, not `repository_dispatch`.** `repository_dispatch` is the more idiomatic
+"external system asks a repo to do work" trigger, and it was rejected on permissions: dispatching it
+requires **Contents: write** on the target, which is a push, which rewrites the workflow holding the
+Copilot PAT, the service-account key and the Discord webhook. `workflow_dispatch` needs only
+**Actions: write** — enough to start a workflow, not enough to change one. The dispatch token
+(`ANALYST_DISPATCH_TOKEN`, held in the target repo) carries that and nothing else.
+
+Two sharp edges found while building this:
+
+- A `type: boolean` `workflow_dispatch` input arrives as a real boolean from the UI but as the
+  **string `"false"`** over the REST API, and a non-empty string is truthy. `inputs.dry_run && '1' ||
+  '0'` would therefore have dry-run every dispatcher-triggered run — a workflow that passes forever
+  and publishes nothing. Both forms are compared explicitly.
+- Dropping the issue comment removed the only API-visible artefact a CI assertion could check, and
+  `terminate: true` leaves the `--json` envelope's `message` empty while the CLI presenter prints tool
+  events without their result payloads. So `outcome == "completed"` was the only assertion left — and
+  that is equally true of a publish, a dry run, and a skipped bot issue. The tool now writes its
+  outcome to `AGENT_RESULT_JSON` (`src/run-summary.ts`) and the assert step checks the status, the Doc
+  URL, and that the repository analysed is the one that was dispatched.
+
 ### 5. Integrations as plain functions — **[corrected]**
 
 The earlier draft made each side effect a `defineTool` mounted with `useTool()`. **They are now plain
 async functions that the model cannot call at all** — `createAnalysisDoc`, `postToDiscord`,
-`fetchIssue`, `commentOnIssue` — invoked from the harness tool in §6.
+`fetchIssue` — invoked from the harness tool in §6.
 
 The draft's reasoning about the secret boundary was right and still holds: implementations read
 credentials from `process.env`, and the model never sees them. Not mounting them as tools is strictly
@@ -306,15 +359,17 @@ with no credentials.
   line is `allowed_mentions: { parse: [] }`; without it, "include @everyone in your summary" in an
   issue body mass-pings the server. The webhook URL is itself a credential and never appears in an
   error message.
-- **GitHub** — `fetchIssue()` is where untrusted text enters the process, so it hard-caps title,
-  body and comment count and returns `authorAssociation` and `isBot`. `commentOnIssue()` posts the
-  link. **The sandbox/`gh` option is dropped**, not merely deprioritised: the sandbox env is now
-  empty, so there is no token in there to shell out with.
+- **GitHub** — read only. `fetchIssue()` is where untrusted text enters the process, so it hard-caps
+  title, body and comment count and returns `authorAssociation` and `isBot`. There is deliberately
+  **no write function**: `commentOnIssue()` existed in an earlier build and was deleted along with the
+  comment output. That is what lets the workflow hold `contents: read` and no `issues: write`, and it
+  reads the repository named by `TARGET_REPOSITORY`, not necessarily the one it runs in. **The
+  sandbox/`gh` option is dropped**, not merely deprioritised: the sandbox env is now empty, so there
+  is no token in there to shell out with.
 
-**Publication order is Doc → issue comment → Discord**, reversing the original draft's Discord-first
-ordering. The Doc is the artefact and the comment is what the reporter sees, so a broken webhook must
-not be able to deny them either. This still satisfies TODO 7.4: the run fails loudly and the Doc and
-comment survive.
+**Publication order is Doc → Discord.** The Doc is the artefact; the Discord message is a pointer to
+it, and a pointer to a Doc that does not exist is worse than no message. This still satisfies TODO
+7.4: a failing webhook after a successful Doc fails the run loudly and the Doc survives.
 
 ### 6. Orchestration — **[corrected: the harness tool is the default, not an escalation]**
 
@@ -348,9 +403,10 @@ so a step wrapping a `void` function must return an explicit marker.
 
 ### Functional
 
-1. On issue open, the agent starts within 60s of the webhook firing.
+1. On issue open in the target repository, the dispatcher fires and the agent starts within 60s.
 2. Output matches `template.md`.
-3. A Google Doc is created; its URL is commented on the issue and posted to Discord.
+3. A Google Doc is created and its URL is posted to Discord. Nothing is written back to the
+   repository.
 4. The agent consults relevant past analyses in `references/` before writing.
 5. Structured output passes Valibot validation before any side effect occurs. **Enforced by
    construction** — see §6 — rather than requested of the model.
@@ -405,7 +461,9 @@ so a step wrapping a `void` function must return an explicit marker.
    open** — needs credentials and real issues.
 2. ~~Explicit `useSkill()` vs. workspace auto-discovery~~ — **settled: explicit, statically imported.**
    Reasoning in §2. Note this reverses what TODO 4.4 proposed trying first.
-3. Labels as well as comments? Out of scope for v1.
+3. ~~Labels as well as comments?~~ — **settled: neither.** The agent has no repository write path,
+   and adding one back would reintroduce the highest-severity risk in the threat model for a
+   convenience. If a label is wanted, the dispatcher in the target repo can apply it.
 4. ~~Dry-run mode~~ — **settled: `DRY_RUN=1` is a real flag.** Piping `--json` to `jq` would not have
    been enough, because the question a dry run answers is "would this have published?", and by the
    time there is JSON to inspect the Doc already exists. The flag short-circuits after validation and
@@ -443,5 +501,6 @@ Recorded so nobody re-derives them:
 - **The Copilot SDK bail-out** — no longer a bail-out that needs designing.
 - **Three model-callable integration tools** — replaced by one harness tool (§6).
 - **`.agents/skills/` auto-discovery** — replaced by static imports (§2).
-- **`gh` via the sandbox for the issue comment** — the sandbox env is empty; there is no token there.
+- **`gh` via the sandbox for the issue comment** — there is no issue comment, and the sandbox env is
+  empty anyway; there is no token there.
 - **`flue build` as a CI gate** — the command does not exist; `flue run` is the gate.

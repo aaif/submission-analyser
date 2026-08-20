@@ -28,13 +28,7 @@ import { installRecordingDeps, type InstalledDeps } from './helpers/publish-deps
 import { makeToolContext, type StubContextOptions } from './helpers/tool-context.ts';
 
 /** The publication steps, in the order the design requires. */
-const EXPECTED_STEPS = [
-  'fetch-issue',
-  'analyse',
-  'create-doc',
-  'comment-on-issue',
-  'post-to-discord',
-];
+const EXPECTED_STEPS = ['fetch-issue', 'analyse', 'create-doc', 'post-to-discord'];
 
 let envSnapshot: NodeJS.ProcessEnv;
 let installed: InstalledDeps;
@@ -75,15 +69,15 @@ describe('analyze_and_publish — happy path', () => {
       status: 'published',
       issueNumber: 1,
       docUrl: 'https://docs.google.com/document/d/test-doc/edit',
-      commentUrl: 'https://github.com/acme/widget/issues/1#issuecomment-99',
       severity: SAMPLE_ANALYSIS.severity,
       injectionSuspected: false,
     });
     expect(result.output.detail).toContain('Published the analysis of issue #1');
 
     expect(record.docs).toHaveLength(1);
-    expect(record.comments).toHaveLength(1);
     expect(record.discord).toHaveLength(1);
+    // Nothing is written back to the repository at all — see PublishDeps.
+    expect(Object.keys(record)).not.toContain('comments');
   });
 
   it('fetches the issue from the configured repository', async () => {
@@ -98,9 +92,8 @@ describe('analyze_and_publish — happy path', () => {
     expect(stub.prompts[0]!.text).toContain('issue-analysis');
   });
 
-  it('links the Doc URL into both the issue comment and the Discord post', async () => {
+  it('links the Doc URL into the Discord post', async () => {
     const { record } = await run();
-    expect(record.comments[0]!.body).toContain('https://docs.google.com/document/d/test-doc/edit');
     expect(record.discord[0]!.docUrl).toBe('https://docs.google.com/document/d/test-doc/edit');
   });
 
@@ -111,27 +104,18 @@ describe('analyze_and_publish — happy path', () => {
 });
 
 describe('analyze_and_publish — publish ordering', () => {
-  it('records the steps in order: fetch, analyse, doc, comment, discord', async () => {
+  it('records the steps in order: fetch, analyse, doc, discord', async () => {
     const { stub } = await run();
     expect(stub.steps).toEqual(EXPECTED_STEPS);
     expect(stub.completedSteps).toEqual(EXPECTED_STEPS);
   });
 
-  it('publishes the Doc and the issue comment before Discord', async () => {
+  // The Discord message is a pointer to the Doc, so announcing before the Doc exists would
+  // advertise a URL that 404s.
+  it('creates the Doc before announcing it on Discord', async () => {
     const { record } = await run();
 
-    expect(record.order).toEqual([
-      'fetchIssue',
-      'createAnalysisDoc',
-      'commentOnIssue',
-      'postToDiscord',
-    ]);
-    const doc = record.order.indexOf('createAnalysisDoc');
-    const comment = record.order.indexOf('commentOnIssue');
-    const discord = record.order.indexOf('postToDiscord');
-    expect(doc).toBeLessThan(discord);
-    expect(comment).toBeLessThan(discord);
-    expect(doc).toBeLessThan(comment);
+    expect(record.order).toEqual(['fetchIssue', 'createAnalysisDoc', 'postToDiscord']);
   });
 
   it('routes every side effect through a named durable step', async () => {
@@ -151,7 +135,6 @@ describe('analyze_and_publish — bot-authored issues (the infinite-loop guard)'
     expect(result).toMatchObject({ terminate: true });
 
     expect(record.docs).toHaveLength(0);
-    expect(record.comments).toHaveLength(0);
     expect(record.discord).toHaveLength(0);
     expect(record.order).toEqual(['fetchIssue']);
     // Not even a token is spent.
@@ -177,7 +160,6 @@ describe('analyze_and_publish — DRY_RUN', () => {
     expect(stub.prompts).toHaveLength(1);
     expect(stub.steps).toEqual(['fetch-issue', 'analyse']);
     expect(record.docs).toHaveLength(0);
-    expect(record.comments).toHaveLength(0);
     expect(record.discord).toHaveLength(0);
   });
 
@@ -207,7 +189,6 @@ describe('analyze_and_publish — assertNoSecrets before any egress', () => {
       await expect(analyzeAndPublish.run(stub.ctx)).rejects.toThrow(SecretLeakError);
 
       expect(installed.record.docs).toHaveLength(0);
-      expect(installed.record.comments).toHaveLength(0);
       expect(installed.record.discord).toHaveLength(0);
       expect(stub.steps).toEqual(['fetch-issue', 'analyse']);
     });
@@ -246,25 +227,18 @@ describe('analyze_and_publish — partial failure (TODO 7.4)', () => {
 
     await expect(analyzeAndPublish.run(stub.ctx)).rejects.toThrow('Discord webhook POST failed');
 
-    // The reporter still got the analysis.
+    // The Doc — the actual artefact — survives a broken webhook.
     expect(installed.record.docs).toHaveLength(1);
-    expect(installed.record.comments).toHaveLength(1);
-    expect(installed.record.order).toEqual([
-      'fetchIssue',
-      'createAnalysisDoc',
-      'commentOnIssue',
-      'postToDiscord',
-    ]);
+    expect(installed.record.order).toEqual(['fetchIssue', 'createAnalysisDoc', 'postToDiscord']);
     // The run still fails loudly, and the reason reaches the operator's log.
     expect(stub.logs.some((line) => line.level === 'error')).toBe(true);
   });
 
-  it('a Doc failure stops before the comment and before Discord', async () => {
+  it('a Doc failure stops before Discord', async () => {
     installed = installRecordingDeps({ failDoc: new Error('Drive files.create failed with 403') });
     const stub = makeToolContext({ analysis: SAMPLE_ANALYSIS });
 
     await expect(analyzeAndPublish.run(stub.ctx)).rejects.toThrow('Drive files.create failed');
-    expect(installed.record.comments).toHaveLength(0);
     expect(installed.record.discord).toHaveLength(0);
   });
 

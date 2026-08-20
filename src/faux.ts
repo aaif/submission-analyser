@@ -149,7 +149,6 @@ export const SAMPLE_ANALYSIS = {
  */
 export interface OfflineRecord {
   docs: Array<{ title: string; markdown: string }>;
-  comments: Array<{ issueNumber: number; body: string }>;
   discord: Array<Record<string, unknown>>;
 }
 
@@ -157,7 +156,7 @@ export function installOfflineDeps(options: { issue?: Partial<FauxIssue> } = {})
   if (!isFaux()) {
     throw new Error('installOfflineDeps requires FLUE_FAUX=1; refusing to fake a real run.');
   }
-  const record: OfflineRecord = { docs: [], comments: [], discord: [] };
+  const record: OfflineRecord = { docs: [], discord: [] };
   const issue = { ...SAMPLE_ISSUE, ...options.issue };
 
   publishDeps.resolveFolderId = () => 'faux-drive-folder';
@@ -168,10 +167,6 @@ export function installOfflineDeps(options: { issue?: Partial<FauxIssue> } = {})
       id: 'faux-doc-id',
       url: 'https://docs.google.com/document/d/faux-doc-id/edit',
     };
-  };
-  publishDeps.commentOnIssue = async ({ issueNumber, body }) => {
-    record.comments.push({ issueNumber, body });
-    return { url: `https://github.com/acme/widget/issues/${issueNumber}#issuecomment-1` };
   };
   publishDeps.postToDiscord = async (input) => {
     record.discord.push({ ...input });

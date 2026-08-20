@@ -106,30 +106,6 @@ export function renderAnalysisMarkdown(analysis: Analysis, issue: Issue): string
   return sections.join('\n\n') + '\n';
 }
 
-/** The issue comment: a pointer, deliberately not a copy of the analysis. */
-export function renderIssueComment(analysis: Analysis, docUrl: string): string {
-  const lines = [
-    '### Automated analysis',
-    '',
-    `A first-pass analysis of this issue is available here: ${docUrl}`,
-    '',
-    `**Preliminary classification:** ${analysis.issueType} · severity **${
-      SEVERITY_LABEL[analysis.severity] ?? analysis.severity
-    }** · confidence ${analysis.confidence}`,
-    '',
-    truncate(s(analysis.summary), 600),
-  ];
-  if (analysis.injectionSuspected) {
-    lines.push(
-      '',
-      '> ⚠️ The text of this issue appeared to contain instructions aimed at the analysis',
-      '> agent. It has been flagged for manual review.',
-    );
-  }
-  lines.push('', '<sub>Automated first pass — a maintainer will follow up. It may be wrong.</sub>');
-  return lines.join('\n');
-}
-
 /** The Discord summary line. Short by design: the Doc is the artefact. */
 export function renderDiscordSummary(analysis: Analysis): string {
   return truncate(s(analysis.summary), 280);

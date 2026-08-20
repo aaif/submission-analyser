@@ -112,9 +112,9 @@ seam (`fetchImpl`, `octokit`, `accessToken`) so the whole publish path tests wit
 - `post_to_discord` — input: docUrl, summary, issueNumber, issueTitle.
 - Small embed; truncate summary to ~280 chars. Throw on non-2xx.
 
-### 3.3 `src/integrations/github.ts` — **[DONE]** `fetchIssue` (hard caps, `authorAssociation`, `isBot`) and `commentOnIssue`
-- `comment_on_issue` — input: issueNumber, body.
-- Octokit with `GITHUB_TOKEN`.
+### 3.3 `src/integrations/github.ts` — **[DONE]** `fetchIssue` (hard caps, `authorAssociation`, `isBot`); read-only
+- ~~`comment_on_issue` — input: issueNumber, body.~~ **[DROPPED]** The output is the Doc plus the Discord message, so there is no write path here at all. `commentOnIssue` was built and then deleted. This is what lets the workflow run with `contents: read` and no `issues: write`: a token that cannot write cannot be talked into writing.
+- Octokit with `GITHUB_TOKEN`, reading the repository named by `TARGET_REPOSITORY` — which is deliberately not assumed to be the repo the workflow runs in.
 
 ### 3.4 Smoke scripts — **[DONE, NEEDS CREDENTIALS TO RUN]**
 - `scripts/smoke-<tool>.ts` per tool, run manually against real credentials. Not in `npm test`.
@@ -137,7 +137,7 @@ seam (`fetchImpl`, `octokit`, `accessToken`) so the whole publish path tests wit
 
 ### 4.4 [DECISION] Explicit `useSkill()` vs. workspace auto-discovery — **[DECIDED: explicit, and this reverses the recommendation below]**
 - With `local()`, skills in `.agents/skills/` are discovered automatically. Explicit `useSkill()` is for npm-imported or code-defined skills.
-- ~~Try auto-discovery first; it is less code.~~ **Do not.** The deciding factor is not code volume, it is failure shape. A malformed workspace `SKILL.md` is **skipped with a warning** — so in headless CI the agent still runs, still creates a Doc, still posts to Discord, and still comments on the issue, with an ungrounded analysis under a green check mark. Nobody investigates a green run. A static `import skill from '../skills/issue-analysis/SKILL.md'` fails at load with exit code 1 and a message naming the problem, before any model call or side effect (verified empirically both ways).
+- ~~Try auto-discovery first; it is less code.~~ **Do not.** The deciding factor is not code volume, it is failure shape. A malformed workspace `SKILL.md` is **skipped with a warning** — so in headless CI the agent still runs, still creates a Doc and still posts to Discord, with an ungrounded analysis under a green check mark. Nobody investigates a green run. A static `import skill from '../skills/issue-analysis/SKILL.md'` fails at load with exit code 1 and a message naming the problem, before any model call or side effect (verified empirically both ways).
 - Secondary reason: auto-discovery reads whatever is in the sandbox cwd, which turns the checkout into an unauthenticated instruction channel the moment it is ever attacker-influenced.
 - Consequence: skills live in **`src/skills/`**, and `.agents/skills/` must **not** also exist — both copies would mount and drift.
 - One config detail this needs: `tsconfig.json` must list `"@flue/runtime"` in `types`, or the ambient `*/SKILL.md` module declaration only resolves in files that happen to import `@flue/runtime`.
@@ -174,24 +174,31 @@ seam (`fetchImpl`, `octokit`, `accessToken`) so the whole publish path tests wit
 ## Phase 6 — CI
 
 ### 6.1 `.github/workflows/issue-analyst.yml` — **[DONE]**
-- Trigger `issues: [opened]`; optionally `labeled` with `needs-analysis`.
-- Permissions: `contents: read`, `issues: write`. **Never `contents: write`** — see the injection risk in DESIGN.md.
+- ~~Trigger `issues: [opened]`; optionally `labeled` with `needs-analysis`.~~ **[ALTERED]** The trigger is `workflow_dispatch` only, with `issue_number` / `target_repo` / `dry_run` inputs. `on: issues` fires only for the repo hosting the workflow, and the issues being analysed live in a different repo; the `[opened, labeled]` trigger therefore moved to a dispatcher workflow in the *target* repo (`examples/target-repo-dispatch.yml`, copied there as `.github/workflows/request-issue-analysis.yml`). One file now serves both the automatic and the manual path, so there is no second workflow to drift — see DESIGN.md §4b.
+- Permissions: `contents: read` and **nothing else**. **[ALTERED]** Not `issues: write` either, now that the agent never comments. **Never `contents: write`** — see the injection risk in DESIGN.md.
+- Validate the inputs in shell before use: `issue_number` must be digits, `target_repo` must be exactly `owner/repo`. And compare `dry_run` against the **string** `'true'` as well as the boolean: a `type: boolean` input arrives as the string `"false"` over the REST API, and a non-empty string is truthy, so `inputs.dry_run && '1' || '0'` would silently dry-run every dispatcher-triggered run.
 - `timeout-minutes: 30`.
 - Steps: checkout, setup-node@22, `npm ci`, `npx flue run …`.
 - Two-step primary/fallback pattern from DESIGN.md §4, using `continue-on-error` and `steps.<id>.outcome`. **[ALTERED]** Both legs use the one model credential, `COPILOT_GITHUB_TOKEN`, because both models come from Copilot; the earlier asymmetric-secrets split existed only to serve a second provider that is now gone.
 - Model names as repo **variables** (not secrets) so they're visible and one-click editable.
 - **A final required assertion step, or `continue-on-error` inverts the whole design:** with it set, the job reports success when *both* model steps fail. Parse the `--json` envelope and fail unless `outcome == "completed"` **and** a Doc URL is present. The field is `outcome`, values `"completed"` / `"failed"` / `"aborted"` / `"error"` — asserting `"success"` matches nothing and passes always.
-- Per-issue `concurrency` with `cancel-in-progress: false`; a cancelled run can leave a Doc with no comment.
-- Pin every third-party action to a full commit SHA: a mutable tag is a supply-chain write into a workflow holding `issues: write`.
+- Per-issue `concurrency` with `cancel-in-progress: false`; a cancelled run can leave a Doc that was never announced.
+- Pin every third-party action to a full commit SHA: a mutable tag is a supply-chain write into a workflow holding every model and publishing credential.
+- **[ADDED]** The assertion needs an anchor the run actually produces. With no issue comment there is no API-visible artefact, `terminate: true` empties the envelope's `message`, and the CLI presenter prints tool events without result payloads — so `outcome == "completed"` would be the only available check, and that is equally true of a publish, a dry run and a skipped bot issue. `writeRunResult()` (`src/run-summary.ts`) writes the outcome to `AGENT_RESULT_JSON`, and the assert step checks the status against `DRY_RUN`, the Doc URL shape, and that the repository analysed is the one that was dispatched.
 - Also added, not in the original list: **`ci.yml`**, which runs `npm run verify` with **no secrets at all**. Since `verify` ends in `agent:faux`, CI exercises real CLI loading, skill validation, the `--json` envelope and exit codes credential-free.
 
-### 6.2 `issue-analyst-manual.yml` — **[DONE]**
-- `workflow_dispatch` with an `issue_number` input, for re-runs.
+### 6.2 ~~`issue-analyst-manual.yml`~~ — **[MERGED into 6.1]**
+- There is one workflow, dispatched the same way whether a human or the target repo's dispatcher starts it. A separate manual file would be a second copy of every step, secret and assertion, kept in sync by hope.
+
+### 6.2b `examples/target-repo-dispatch.yml` — **[DONE, NEEDS THE OPERATOR TO INSTALL IT]**
+- Copy into the target repo as `.github/workflows/request-issue-analysis.yml`. `on: issues: [opened, labeled]`, `permissions: {}`, one `github-script` step calling `actions.createWorkflowDispatch`.
+- Needs an `ANALYST_DISPATCH_TOKEN` secret in the *target* repo: a fine-grained PAT with **Actions: read and write on the analyst repo only**. Never Contents: write — that is a push into the workflow holding every secret, i.e. arbitrary code execution. This is exactly why `workflow_dispatch` was chosen over `repository_dispatch`, which requires Contents: write.
+- The target repo being public means anyone can file an issue and so spend model budget. Deleting `opened` from the trigger leaves the `needs-analysis` label as a maintainer gate.
 
 ### 6.3 `docs/secrets.md` — **[DONE]**
 - Minting a Copilot-scoped fine-grained PAT; Google service account + folder grant; Discord webhook.
 - Note `GITHUB_TOKEN` is provided automatically.
-- Three Google traps that will otherwise eat the first afternoon: a service account has **no Drive storage quota of its own**, so the target folder must live on a **Shared Drive** or `files.create` fails with `storageQuotaExceeded` (the single most likely first-run failure); `drive.file` is the narrowest workable scope and may need widening to `drive` for a pre-existing parent; and **never** grant link-anyone sharing, because the Doc URL gets posted to Discord and commented on a possibly-public issue.
+- Three Google traps that will otherwise eat the first afternoon: a service account has **no Drive storage quota of its own**, so the target folder must live on a **Shared Drive** or `files.create` fails with `storageQuotaExceeded` (the single most likely first-run failure); `drive.file` is the narrowest workable scope and may need widening to `drive` for a pre-existing parent; and **never** grant link-anyone sharing, because the Doc URL gets posted to a Discord channel whose membership this codebase knows nothing about.
 - The Discord webhook URL is itself a credential — anyone holding it can post as the bot. It is a secret, not a var, and it never appears in an error message.
 
 ### 6.4 Daily canary — **[DONE]**
@@ -203,19 +210,19 @@ seam (`fetchImpl`, `octokit`, `accessToken`) so the whole publish path tests wit
 ## Phase 7 — Validation
 
 ### 7.1 End-to-end on a throwaway private repo — **[NEEDS CREDENTIALS]**
-- Three issues: clear bug, feature request, ambiguous. Confirm Doc + Discord + comment for each.
+- Three issues: clear bug, feature request, ambiguous. Confirm Doc + Discord for each.
 - Spot-check that Docs actually reference past reviews — if they never do, the skill's retrieval step isn't working.
 
 ### 7.2 Fallback test — **[NEEDS CREDENTIALS]**
-- Set `PRIMARY_MODEL` to an invalid specifier. Confirm step 1 fails, step 2 runs on Gemini, run completes.
+- Set `PRIMARY_MODEL` to an invalid specifier. Confirm step 1 fails, step 2 runs on the fallback model, run completes.
 
 ### 7.3 **Prompt-injection test** — do not skip — **[PARTIAL: the cheap half is DONE and now runs on every PR]**
 - **[DONE]** `tests/fixtures/injections/` holds a corpus of hostile issue bodies — instruction override, exfiltration, fake authority, fence-delimiter forging, `@everyone`, HTML-comment-hidden text, attacker links, fake tool-call blocks, obfuscation. Every fixture runs through the model-free pipeline (fence → sanitize → render) on every PR, asserting the fence is not escapable, no mention survives, non-allowlisted links are inert, and nothing credential-shaped reaches the output. Cheap enough that there is no excuse to skip it.
 - **[DONE]** The `useAgentFinish` assertion on unexpected tool calls was not left as a "consider" — it is in 5.1, and it throws rather than nudges.
-- **[NEEDS CREDENTIALS]** The half a corpus cannot cover: file a real test issue and confirm the *model's* behaviour end to end — no secret in the Doc, Discord message or comment; no unexpected tool calls; no shell commands beyond reading the repo. The offline corpus proves the guards hold; only a real run shows whether the model tries the door.
+- **[NEEDS CREDENTIALS]** The half a corpus cannot cover: file a real test issue and confirm the *model's* behaviour end to end — no secret in the Doc or the Discord message; no unexpected tool calls; no shell commands beyond reading the repo. The offline corpus proves the guards hold; only a real run shows whether the model tries the door.
 
-### 7.4 Failure-mode test — **[DONE offline]** a Discord failure is asserted to leave the Doc and comment intact and then propagate. Revoking a real webhook is **[NEEDS CREDENTIALS]**
-- Revoke the Discord webhook mid-run. Confirm the Action fails loudly and the Doc + comment survive.
+### 7.4 Failure-mode test — **[DONE offline]** a Discord failure is asserted to leave the Doc intact and then propagate. Revoking a real webhook is **[NEEDS CREDENTIALS]**
+- Revoke the Discord webhook mid-run. Confirm the Action fails loudly and the Doc survives.
 
 ---
 

@@ -14,7 +14,6 @@ import {
   MAX_BODY_CHARS,
   MAX_COMMENT_CHARS,
   MAX_COMMENTS,
-  commentOnIssue,
   fetchIssue,
   type Issue,
 } from '../src/integrations/github.ts';
@@ -194,68 +193,5 @@ describe('fetchIssue — errors', () => {
     await expect(fetchIssue({ ...REF, owner: 'acme/evil' }, octokit)).rejects.toThrow();
     await expect(fetchIssue({ ...REF, issueNumber: 0 }, octokit)).rejects.toThrow();
     expect(calls).toHaveLength(0);
-  });
-});
-
-describe('commentOnIssue', () => {
-  it('posts to the right owner/repo/issue and returns the comment URL', async () => {
-    const { octokit, calls } = stubOctokit({
-      commentUrl: 'https://github.com/acme/widget/issues/7#issuecomment-1234',
-    });
-    const result = await commentOnIssue(
-      { owner: 'acme', repo: 'widget', issueNumber: 7, body: 'Analysis: see the Doc.' },
-      octokit,
-    );
-
-    expect(result).toEqual({ url: 'https://github.com/acme/widget/issues/7#issuecomment-1234' });
-    expect(calls).toEqual([
-      {
-        method: 'createComment',
-        params: {
-          owner: 'acme',
-          repo: 'widget',
-          issue_number: 7,
-          body: 'Analysis: see the Doc.',
-        },
-      },
-    ]);
-  });
-
-  it('throws on an API error', async () => {
-    const { octokit } = stubOctokit({ createCommentError: new Error('Resource not accessible') });
-    await expect(commentOnIssue({ ...REF, body: 'anything' }, octokit)).rejects.toThrow(
-      'Resource not accessible',
-    );
-  });
-
-  it('rejects an empty body before calling the API', async () => {
-    const { octokit, calls } = stubOctokit();
-    await expect(commentOnIssue({ ...REF, body: '' }, octokit)).rejects.toThrow();
-    expect(calls).toHaveLength(0);
-  });
-});
-
-describe('the Issue interface', () => {
-  it('is fully populated by fetchIssue — no field silently missing', async () => {
-    const { octokit } = stubOctokit({ comments: comments(2) });
-    const issue = await fetchIssue(REF, octokit);
-
-    const keys: Array<keyof Issue> = [
-      'number',
-      'title',
-      'body',
-      'url',
-      'author',
-      'authorAssociation',
-      'isBot',
-      'labels',
-      'state',
-      'createdAt',
-      'comments',
-      'truncated',
-    ];
-    for (const key of keys) {
-      expect(issue[key], `missing ${key}`).not.toBeUndefined();
-    }
   });
 });

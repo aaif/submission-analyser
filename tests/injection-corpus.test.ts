@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fence } from '../src/safety/fence.ts';
 import { sanitize } from '../src/safety/sanitize.ts';
 import { SecretLeakError, assertNoSecrets, findSecret } from '../src/safety/secret-scan.ts';
-import { docTitle, renderAnalysisMarkdown, renderIssueComment } from '../src/render.ts';
+import { docTitle, renderAnalysisMarkdown, renderDiscordSummary } from '../src/render.ts';
 import type { Analysis } from '../src/schema/analysis.ts';
 import type { Issue } from '../src/integrations/github.ts';
 
@@ -161,12 +161,12 @@ describe('hostile issue corpus', () => {
         }
       });
 
-      it('renders into a Doc, a comment and a title with nothing hostile left live', () => {
+      it('renders into a Doc, a Discord summary and a title with nothing hostile left live', () => {
         const model = echoingAnalysis(body);
         const target = issue(body);
         const surfaces = [
           renderAnalysisMarkdown(model, target),
-          renderIssueComment(model, 'https://docs.google.com/document/d/abc/edit'),
+          renderDiscordSummary(model),
           docTitle(target),
         ];
 
@@ -178,12 +178,15 @@ describe('hostile issue corpus', () => {
           expect(findSecret(surface)).toBeNull();
         }
 
-        // The Doc always leads with the injection warning for a flagged analysis.
+        // The Doc always leads with the injection warning for a flagged analysis. It is the
+        // artefact a human reads, and since the agent no longer comments on the issue it is
+        // also the only long-form surface — so the banner has to be unmissable there.
+        // Discord's own '⚠️ Flagged' field is built inside postToDiscord from the
+        // injectionSuspected flag, and is asserted in integrations-discord.test.ts.
         const doc = surfaces[0] as string;
         expect(doc.indexOf('Possible prompt-injection attempt')).toBeLessThan(
           doc.indexOf('## Summary'),
         );
-        expect(surfaces[1]).toContain('flagged for manual review');
       });
     });
   }

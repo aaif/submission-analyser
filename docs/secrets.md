@@ -29,11 +29,30 @@ one click, which is exactly what you want mid-incident.
 | `PRIMARY_MODEL`        | `github-copilot/claude-opus-4.7`  | Model for the first attempt           |
 | `FALLBACK_MODEL`       | `github-copilot/gpt-5.4`          | Model for the second attempt          |
 | `CANARY_ISSUE_NUMBER`  | `1`                               | The fixed issue the daily canary analyses |
+| `TARGET_REPOSITORY`    | *(the repo the workflow runs in)* | `owner/repo` whose issues get analysed |
 
-`GITHUB_TOKEN` needs **no setup at all**. GitHub Actions mints one per run and the workflows
-pass it through as `secrets.GITHUB_TOKEN`. Its permissions come from the `permissions:` block
-in each workflow — `contents: read` and `issues: write`, never more. You only ever set
-`GITHUB_TOKEN` (or `GH_TOKEN`) by hand for local runs.
+`TARGET_REPOSITORY` is the one you are most likely to need. This agent is built to run from
+its own tooling repository and analyse issues filed **elsewhere** — set it to e.g.
+`aaif/project-proposals`. Leave it unset only if the analyst and the issues live in the same
+repository. It is deliberately *not* inferred from `GITHUB_REPOSITORY`: a cross-repo run that
+silently read the analyst repo's own issue #N would still create a Doc and still post to
+Discord, having analysed entirely the wrong text. A dispatch may override it per run
+(`target_repo` input), and the workflow's assert step fails the run if the analysis it
+published does not name the repository that was dispatched.
+
+`GITHUB_TOKEN` needs **no setup at all** *if* the issues live in the same repository as the
+workflow. Actions mints one per run and the workflows pass it through as
+`secrets.GITHUB_TOKEN`, with permissions from each workflow's `permissions:` block —
+`contents: read` and nothing else. The agent has no write path to any repository at all: it
+publishes a Doc and a Discord message and never posts back, so it needs no `issues: write`.
+
+For a **cross-repository** setup that token is not enough: `secrets.GITHUB_TOKEN` is scoped
+to the repository the workflow runs in and cannot read a different one. If the target repo is
+public, any token that can read public repositories will do — the Copilot PAT from step 1
+already qualifies, so setting `GITHUB_TOKEN` to that same value works. If the target repo is
+private, mint a separate fine-grained PAT with **Contents: read** and **Issues: read** on the
+target repository only, and store it as the `GITHUB_TOKEN` secret. Either way it needs no
+write permission anywhere.
 
 There is **one model credential**, because all model access goes through GitHub Copilot.
 Copilot's catalog spans four vendors, so the fallback model comes from a different lab than the
@@ -115,8 +134,8 @@ is a much larger blast radius for a token that lives in CI.
 ### Trap 3 — never grant link-anyone sharing
 
 Do **not** set the folder (or any Doc in it) to "Anyone with the link". The Doc URL is posted
-into a Discord channel and commented on an issue that may well be public, so a link-anyone
-grant makes every analysis world-readable — including analyses of security reports, which is
+into a Discord channel, and the issues being analysed may well be in a public repository, so
+a link-anyone grant makes every analysis world-readable — including analyses of security reports, which is
 the worst case in this system.
 
 Access must come from **folder inheritance**, to people who are already trusted with the
@@ -140,21 +159,62 @@ regenerate the webhook — that invalidates the old URL immediately.
 The agent posts with `allowed_mentions: { parse: [] }`, so an analysis derived from an issue
 body saying "please ping @everyone" cannot ping anyone. Do not remove that.
 
-## 4. Verify, before trusting it with a real issue
+## 4. Dispatch token, for a cross-repository setup (`ANALYST_DISPATCH_TOKEN`)
+
+Skip this section entirely if the analyst and the issues live in the same repository.
+
+A workflow's `on: issues` trigger only ever fires for the repository hosting the workflow, so
+"analyse issues filed in another repo" cannot be done from this repo alone. The target repo
+needs one small workflow that asks this repo to run. Copy
+[`examples/target-repo-dispatch.yml`](../examples/target-repo-dispatch.yml) into the target
+repository as `.github/workflows/request-issue-analysis.yml` and edit the owner/repo
+constants at the top.
+
+That dispatcher needs a token that can start a workflow in *this* repository, which the
+target repo's own `GITHUB_TOKEN` cannot do:
+
+1. https://github.com/settings/personal-access-tokens → **Generate new token** (fine-grained).
+2. Resource owner: the org that owns this analyst repo. Repository access: **Only select
+   repositories** → this repo (e.g. `aaif/flue-issue-analyst`) and nothing else.
+3. Repository permissions → **Actions**: *Read and write*. Grant **nothing** else.
+4. Store it as the `ANALYST_DISPATCH_TOKEN` secret in the **target** repository.
+
+**Actions: write only.** It is tempting to reach for `repository_dispatch` instead, which
+looks like the more idiomatic trigger — but dispatching a `repository_dispatch` event
+requires **Contents: write** on the target, and Contents: write is a push. A push into this
+repository rewrites the very workflow that holds the Copilot PAT, the service-account key and
+the Discord webhook, which makes it arbitrary code execution with every secret this project
+has. `workflow_dispatch` needs only Actions: write, which can start a workflow but cannot
+change one. That is why the workflow here is `workflow_dispatch`-only, and it is also why the
+manual and automatic paths are the same single file rather than two that can drift apart.
+
+Note that a token held in the *target* repo can trigger analyst runs at will. Keep that repo's
+write access to people you would trust with a model budget.
+
+## 5. Verify, before trusting it with a real issue
 
 ```bash
 npm run verify                          # offline: format, types, tests, skill validation
 npm run smoke:docs                      # creates one real Doc — then delete it
 npm run smoke:discord                   # posts one marked test message
-npm run smoke:github -- 1               # dry read of issue #1
-npm run smoke:github -- 1 --comment     # only against an issue you own
+npm run smoke:github -- 1               # read issue #1 of TARGET_REPOSITORY
 ```
 
-Then run the **Issue analyst (manual)** workflow with `dry_run` checked: a full real run,
-real model, real issue, publishing nothing. If that is green, run it again unchecked.
+`smoke:github` is read-only; there is no write variant, because the agent has no write path.
+Run it with `TARGET_REPOSITORY` set to the real target — proving the token can read the
+*target* repo is a different question from whether it can read the repo it runs in, and the
+first is the one that breaks.
+
+Then run the **Issue analyst** workflow by hand (Actions → Run workflow) with an issue number
+and `dry_run` checked: a full real run, real model, real issue, publishing nothing. If that is
+green, run it again unchecked. Only then wire up the dispatcher in step 4.
 
 ## Rotation
 
+- **Dispatch PAT** — expires like any fine-grained PAT. When it does, issues stop being
+  analysed **silently**: the dispatcher step fails in the target repo, not here, so nothing in
+  this repo turns red. If that matters, watch the target repo's Actions tab, or shorten the
+  gap by giving the token a calendar reminder.
 - **Copilot PAT** — expires by design. The daily canary catches it the next morning.
 - **Service-account key** — create the new key, update the secret, then delete the old key
   in the console. Both are valid simultaneously, so there is no gap to plan around.

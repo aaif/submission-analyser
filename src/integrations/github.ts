@@ -1,10 +1,15 @@
 import { Octokit } from '@octokit/rest';
 import * as v from 'valibot';
 import { githubToken } from '../env.ts';
-import { CommentInputSchema, IssueRefSchema, type IssueRef } from '../schema/integrations.ts';
+import { IssueRefSchema, type IssueRef } from '../schema/integrations.ts';
 
 /**
- * GitHub read + comment. `fetchIssue` is the point where attacker-controlled text enters
+ * GitHub read. There is no write path here on purpose: the agent publishes to a Google Doc
+ * and to Discord, and never posts back to the repository it reads. That is what lets the
+ * workflow run with `contents: read` and no `issues: write` at all — a token that cannot
+ * write cannot be talked into writing.
+ *
+ * `fetchIssue` is the point where attacker-controlled text enters
  * the process, so it is also where that text gets bounded: an issue body has no practical
  * length limit, and an unbounded body is a direct route to an enormous context bill.
  */
@@ -79,18 +84,4 @@ export async function fetchIssue(ref: IssueRef, octokit: Octokit = client()): Pr
     comments,
     truncated,
   };
-}
-
-export async function commentOnIssue(
-  input: v.InferInput<typeof CommentInputSchema>,
-  octokit: Octokit = client(),
-): Promise<{ url: string }> {
-  const { owner, repo, issueNumber, body } = v.parse(CommentInputSchema, input);
-  const { data } = await octokit.issues.createComment({
-    owner,
-    repo,
-    issue_number: issueNumber,
-    body,
-  });
-  return { url: data.html_url };
 }
