@@ -180,17 +180,17 @@ describe('resolveCopilotSession', () => {
     });
   });
 
-  // The path a fine-grained PAT takes: not eligible for the exchange, sent directly to the
-  // host GitHub documents for third-party Copilot API access.
-  it('falls back to sending a PAT directly when the exchange does not apply', async () => {
+  // There is no direct-send fallback, because there is nowhere to send it: probe:copilot
+  // found all four *.githubcopilot.com hosts reject a PAT under every integration id. So a
+  // 404 is a dead end, and the error has to carry the actual remedy.
+  it('fails with the remedy when the credential is not exchange-eligible', async () => {
     const { impl } = stubFetch(() => jsonResponse({ message: 'Not Found' }, 404));
-    const session = await resolveCopilotSession(PAT, impl);
+    const error = await thrownAsync(() => resolveCopilotSession(PAT, impl));
 
-    expect(session).toEqual({
-      token: PAT,
-      baseUrl: 'https://api.githubcopilot.com',
-      strategy: 'direct-pat',
-    });
+    expect(error).toBeInstanceOf(EnvError);
+    expect((error as EnvError).message).toContain('copilot-requests: write');
+    expect((error as EnvError).message).toContain('GITHUB_TOKEN');
+    expect((error as EnvError).message).not.toContain(PAT);
   });
 
   // A rejection is not a fallback. Retrying a 401 against another host would turn a clear
@@ -229,12 +229,14 @@ describe('applyCopilotAuth', () => {
     else process.env['COPILOT_GITHUB_TOKEN'] = saved;
   });
 
-  it('leaves a PAT in place when the exchange does not apply to it', async () => {
+  it('fails rather than leaving an unusable credential in place', async () => {
     process.env['COPILOT_GITHUB_TOKEN'] = PAT;
     const { impl } = stubFetch(() => jsonResponse({ message: 'Not Found' }, 404));
 
-    await applyCopilotAuth(impl);
+    const error = await thrownAsync(() => applyCopilotAuth(impl));
 
+    expect(error).toBeInstanceOf(EnvError);
+    // Unchanged, so nothing downstream can mistake it for a working Copilot token.
     expect(process.env['COPILOT_GITHUB_TOKEN']).toBe(PAT);
   });
 

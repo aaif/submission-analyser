@@ -16,26 +16,27 @@
  * which those hosts do accept. We cannot use that path: it needs an interactive browser login
  * to seed and a writable credential store to refresh, and a one-shot Actions run has neither.
  *
- * So there are two ways a credential can become usable, and which one applies depends on what
- * kind of credential it is. This module tries them in order:
+ * So the only usable credential is one the exchange accepts. Two kinds do:
  *
- *  1. **Exchange.** Present the credential at `/copilot_internal/v2/token`. An OAuth token
- *     from an approved Copilot client gets a Copilot token back, plus a `proxy-ep` naming the
- *     account's own host — which is how individual / business / enterprise entitlements get
- *     handled without configuring anything.
- *  2. **Direct.** A fine-grained PAT with the *Copilot Requests* permission is **not**
- *     eligible for the exchange: the route answers 404 for one (401 when unauthenticated, so
- *     the route exists and the credential authenticated — it is the exchange that does not
- *     apply). GitHub documents that same PAT as the supported way to authenticate Copilot CLI
- *     in non-interactive environments, and the host it documents for third-party Copilot API
- *     access is `https://api.githubcopilot.com` — no entitlement segment. So a PAT is sent
- *     directly, to that host.
+ *  1. **The Actions token.** A workflow with `copilot-requests: write` in its `permissions`
+ *     block gets a `GITHUB_TOKEN` that carries Copilot entitlement, billed to the
+ *     organisation that owns the repository. This is the path GitHub added on 2026-07-02
+ *     precisely so that CI would stop needing a PAT, and it is what this project uses.
+ *  2. **A device-flow OAuth token** (`gho_`), from an approved Copilot client. Exchange-
+ *     eligible, but it needs an interactive login to seed, so it is not a CI option.
  *
- * The choice is *observed*, not configured: whichever the credential turns out to be, it
- * works, and `COPILOT_BASE_URL` is there to override the host if GitHub moves it.
+ * A fine-grained PAT with the *Copilot Requests* permission is **not** usable here, and this
+ * was established the hard way. The exchange answers 404 for one — 401 when unauthenticated,
+ * so the route exists and the credential authenticated; it is the exchange that does not
+ * apply. Sending it directly does not work either: `npm run probe:copilot` tried all four
+ * `*.githubcopilot.com` hosts against three integration ids and every one of the twelve
+ * answered `Personal Access Tokens are not supported for this endpoint`. GitHub documents
+ * that PAT for the Copilot **CLI binary**, which is not the same thing as the Copilot API.
  *
- * Which combination a given credential actually needs is undocumented enough that
- * `npm run probe:copilot` exists to answer it empirically. If both strategies fail, run that.
+ * So a 404 from the exchange is a dead end, not a fallback: it means the credential cannot
+ * reach a model, and saying so immediately beats a second failure one HTTP call later with a
+ * less informative message. `COPILOT_BASE_URL` remains as a host override if GitHub moves the
+ * endpoint, and `npm run probe:copilot` remains the empirical answer for a new credential.
  */
 
 import { setProvider } from '@flue/runtime';
@@ -46,13 +47,6 @@ const EXCHANGE_URL = 'https://api.github.com/copilot_internal/v2/token';
 
 /** Where an exchanged token goes when it carries no usable `proxy-ep`. */
 const DEFAULT_BASE_URL = 'https://api.individual.githubcopilot.com';
-
-/**
- * Where a PAT goes. GitHub documents this host for third-party Copilot API access; it has no
- * `individual`/`business`/`enterprise` segment, which is consistent with it not being tied to
- * an exchanged, entitlement-scoped token.
- */
-const DIRECT_BASE_URL = 'https://api.githubcopilot.com';
 
 /**
  * The editor-impersonating headers pi-ai sends, copied deliberately rather than imported:
@@ -73,7 +67,7 @@ export interface CopilotSession {
   /** For an exchanged token, derived from its `proxy-ep`. For a PAT, the documented host. */
   baseUrl: string;
   /** Which path got us here. Printed once, so a failing run says how it authenticated. */
-  strategy: 'exchanged' | 'direct-pat' | 'pre-exchanged' | 'host-override';
+  strategy: 'exchanged' | 'pre-exchanged' | 'host-override';
 }
 
 /**
@@ -178,7 +172,16 @@ export async function resolveCopilotSession(
     return await exchangeCopilotToken(githubToken, fetchImpl);
   } catch (error) {
     if (!(error instanceof ExchangeNotApplicable)) throw error;
-    return { token: githubToken, baseUrl: DIRECT_BASE_URL, strategy: 'direct-pat' };
+    // 404 means the credential authenticated but is not exchange-eligible, which for every
+    // credential type tested means it cannot reach a model at all. Fail here with the
+    // remedy rather than one opaque HTTP call later. See docs/models.md.
+    throw new EnvError(
+      `${MODEL_CREDENTIAL} authenticated but is not eligible for the Copilot token exchange ` +
+        `(HTTP 404), so it cannot reach a model. A fine-grained personal access token is ` +
+        `rejected by every Copilot inference host — use the workflow's built-in GITHUB_TOKEN ` +
+        `with \`copilot-requests: write\` in the workflow permissions instead. ` +
+        `See docs/models.md.`,
+    );
   }
 }
 

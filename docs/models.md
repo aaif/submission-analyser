@@ -67,32 +67,67 @@ So the credential arrives one step short of usable, and the failure looks like a
 same route answers 401. So the route exists, the credential authenticated, and the exchange
 simply does not apply to it. The exchange is for OAuth tokens from approved Copilot clients.
 
-That leaves two ways a credential becomes usable, and `src/providers/copilot-auth.ts` tries
-them in order at agent-module load:
+**And a PAT is not accepted directly either.** `npm run probe:copilot` tried all four
+`*.githubcopilot.com` hosts against three integration ids — twelve combinations — and every
+one answered the same `Personal Access Tokens are not supported for this endpoint`, including
+`api.githubcopilot.com`. GitHub documents that PAT for the Copilot **CLI binary**, which turns
+out not to be the same thing as the Copilot API. So a fine-grained PAT is a dead end here, and
+no amount of host-guessing changes that.
+
+## The credential CI actually uses: the workflow's own token
+
+**A PAT is not needed, and does not work. The built-in `GITHUB_TOKEN` does.**
+
+A workflow that declares
+
+```yaml
+permissions:
+  contents: read
+  copilot-requests: write
+```
+
+gets a `GITHUB_TOKEN` carrying Copilot entitlement, with requests billed to the organisation
+that owns the repository. GitHub shipped this on 2026-07-02 specifically so CI would stop
+needing a PAT. Prerequisites, all org-level and one-time:
+
+- The org has Copilot, and the **"Allow use of Copilot CLI billed to the organization"** policy
+  is enabled — on by default if the older "Copilot CLI" policy was.
+- The repository is owned by that org. Both repos here are under `aaif`, so this holds.
+
+Nothing is stored as a secret; the workflows pass `secrets.GITHUB_TOKEN` as
+`COPILOT_GITHUB_TOKEN`. `copilot-requests: write` grants **no repository write of any kind** —
+it authorises inference requests — so it does not weaken the read-only posture the threat
+model rests on.
+
+One caveat worth stating plainly: GitHub documents this for the `copilot` CLI binary, not for
+the Copilot API that pi-ai calls. The two share the token-exchange route, so an Actions token
+being exchange-eligible is the expected outcome rather than a certainty. **`npm run
+probe:copilot` cannot answer this from a laptop** — the entitlement only exists inside a
+workflow that requested the permission — so there is a `Probe Copilot access` workflow
+(`workflow_dispatch`) that runs the same probe with the workflow's own token. Run it first;
+its first line reports which *kind* of credential is in the environment (`ghs_` Actions token,
+`gho_` OAuth, `github_pat_` PAT), which is the fact every past round of confusion here turned
+on.
+
+If the Actions token turns out not to be exchange-eligible, the remaining options are, in
+order: a `gho_` device-flow OAuth token seeded once by hand and stored as a secret (documented
+as Copilot's default credential, and exchange-eligible — but it expires); a GitHub App
+user-to-server token; or shelling out to the `copilot` CLI binary instead of calling the API,
+which is the configuration GitHub actually documents.
+
+So there are two credentials the code can use, and `src/providers/copilot-auth.ts` resolves
+them at agent-module load:
 
 | Credential | Path | Host |
 | --- | --- | --- |
-| OAuth token from a Copilot client | Exchange it, use the Copilot token | from the token's `proxy-ep` |
-| Fine-grained PAT, *Copilot Requests* | Send it directly | `https://api.githubcopilot.com` |
+| Actions token with `copilot-requests: write` | Exchange it | from the token's `proxy-ep` |
+| `gho_` OAuth token from a Copilot client | Exchange it | from the token's `proxy-ep` |
+| Fine-grained PAT | **None — fails with the remedy** | — |
 
-The direct path is not a guess: GitHub documents that same PAT as the supported way to
-authenticate **Copilot CLI in non-interactive environments** — "The token must be a
-fine-grained personal access token owned by your personal account… with the Copilot Requests
-permission" — and `api.githubcopilot.com`, with no entitlement segment, is the host it
-documents for third-party Copilot API access. The entitlement-scoped hosts
-(`api.individual.`, `api.business.`, `api.enterprise.`) are what an *exchanged* token is
-scoped to, which is why sending a PAT to one of them produces that "third-party user token"
-complaint.
-
-The strategy is observed rather than configured — whichever the credential turns out to be,
-it works — and `COPILOT_BASE_URL` overrides the host if GitHub moves it. Each run logs one
-line naming the strategy and host (never the credential), so a failing run says how it
-authenticated.
-
-`npm run probe:copilot` settles all of this empirically for a given token: it lists models
-across every host × integration-id combination with read-only `GET /models` calls, invoking
-no model and charging nothing. Reach for it before theorising — the guesswork here has been
-expensive twice.
+A 404 from the exchange is now a hard failure naming `copilot-requests: write`, not a fallback:
+there is nowhere to fall back *to*, and failing at load beats one more opaque 400 mid-run.
+`COPILOT_BASE_URL` overrides the host if GitHub moves it. Each run logs one line naming the
+strategy and host, never the credential.
 
 We did not adopt pi-ai's OAuth path because it needs an interactive browser login to seed and
 a writable credential store to refresh, and a one-shot Actions run has neither.
@@ -107,9 +142,9 @@ a writable credential store to refresh, and a one-shot Actions run has neither.
 - **Where it fails.** A rejected credential now fails at the exchange, naming the variable and
   the HTTP status, rather than as an opaque 400 from an inference endpoint mid-run.
 
-### Two wrong turns worth recording
+### Three wrong turns worth recording
 
-Both were confident, both were wrong, and the pattern is the same each time.
+All three were confident, all three were wrong, and the pattern is the same each time.
 
 **"Only the Claude models are reachable."** The first diagnosis was that Copilot's
 OpenAI-shaped endpoints reject PATs while its `anthropic-messages` endpoint accepts them, so
@@ -123,8 +158,15 @@ same way is evidence about what they *share* — and what they shared was the cr
 token is not a Copilot token) and wrong about the remedy, because it assumed without checking
 that a PAT could be exchanged. It cannot; the exchange answers 404 for one.
 
-What both have in common is reasoning forward from a plausible mechanism instead of probing
-the thing itself. `npm run probe:copilot` is the corrective, and it costs one command.
+**"Then send the PAT directly."** The third was disproved by the probe written to test it:
+twelve host × integration-id combinations, twelve refusals. Worth noting that this one failed
+*cheaply* — a read-only probe rather than another canary round — which is the whole argument
+for the script.
+
+**And the question none of the three asked:** *does this need a token at all?* It does not.
+Three rounds went into making a PAT work while the supported answer was a permission in the
+workflow's `permissions:` block. Each round reasoned forward from the previous round's frame
+instead of re-examining it.
 
 ## The two configured models
 
@@ -197,16 +239,18 @@ only the provider's is not enough; that is why `applyCopilotAuth()` maps `getMod
 
 So the order to check now is:
 
-1. **Which path did it take?** Every run logs `[copilot] auth: <strategy> -> <host>`. A 401 or
-   403 from the exchange names `COPILOT_GITHUB_TOKEN` and the status, and means the token lacks
-   the `Copilot Requests` permission or the owning account has no active seat. A 404 there is
-   expected for a PAT and is not an error — it selects the direct path.
-2. **Does any host accept the credential?** `npm run probe:copilot`. If everything 401s, the
-   credential is the problem; if one combination returns 200, set `COPILOT_BASE_URL` to it.
-3. **Is the credential a fine-grained PAT owned by a user account with a seat?** Classic tokens
-   are not accepted, and *Copilot Requests* is an account permission that does not exist on an
-   org-owned token — seats belong to member accounts, not to the org. A machine account in the
-   org, holding a seat, is the durable answer. See docs/secrets.md §1.
+1. **Is `copilot-requests: write` in the workflow's `permissions:` block?** Without it the
+   workflow's token carries no Copilot entitlement, and everything below is noise. Check the
+   org policy too: **"Allow use of Copilot CLI billed to the organization"** must be enabled.
+2. **Which credential is actually in the environment?** Every run logs
+   `[copilot] auth: <strategy> -> <host>`. Dispatch the **Probe Copilot access** workflow and
+   read its first line: `ghs_` is the Actions token, `gho_` an OAuth token, `github_pat_` a
+   PAT — and a PAT cannot reach a model at all, so if that is what is there, remove the
+   `COPILOT_GITHUB_TOKEN` secret and let the workflow's own token through.
+3. **What did the exchange say?** 404 means the credential authenticated but is not
+   exchange-eligible — the failure names `copilot-requests: write` because that is the fix.
+   401 or 403 means the credential itself was refused: expired, revoked, or the org policy is
+   off.
 4. **Headers.** Every model entry carries `Copilot-Integration-Id: vscode-chat`,
    `Editor-Version`, `Editor-Plugin-Version` and a `User-Agent` naming a VS Code Copilot Chat
    build (32 of 32 entries). That is pi-ai presenting itself as the editor plugin, and those
@@ -218,9 +262,10 @@ So the order to check now is:
 The cheap way to test any of this is the **Model canary** workflow: it is a dry run, it
 publishes nothing, and it can be dispatched by hand as often as you like.
 
-To check a token by hand, `npm run probe:copilot` is the better tool: it tries every host and
-integration id and tells you which combination works. The single call below only exercises the
-*exchange*, which a fine-grained PAT is expected to 404 on:
+To check a credential by hand, the **Probe Copilot access** workflow is the better tool —
+and for the Actions token it is the *only* tool, since that token's entitlement does not exist
+outside a workflow. The single call below only exercises the *exchange*, which a fine-grained
+PAT is expected to 404 on:
 
 ```bash
 curl -sS -o /dev/null -w '%{http_code}\n' \

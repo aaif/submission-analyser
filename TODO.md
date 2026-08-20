@@ -226,20 +226,39 @@ supported for this endpoint` until the exchange landed. Done:
 - Skipped under `FLUE_FAUX`, so the offline path never reaches the network.
 - No credential in any throw path: status codes and error class names only, asserted by test.
 
-**[updated]** It does not accept a fine-grained PAT — the exchange answers 404 for one, where
-an unauthenticated request gets 401, so the credential authenticates and the exchange does not
-apply. `resolveCopilotSession()` therefore tries the exchange and falls back to sending the PAT
-directly at `https://api.githubcopilot.com`, the host GitHub documents for third-party Copilot
-API access. A 401/403 is still a hard failure — only a 404 selects the fallback, because
-retrying a genuine rejection elsewhere would turn one clear error into two confusing ones.
+**[updated twice]** It does not accept a fine-grained PAT, and neither does anything else. The
+exchange answers 404 for one (401 unauthenticated, so the credential authenticates and the
+exchange simply does not apply), and `npm run probe:copilot` then found all four
+`*.githubcopilot.com` hosts × three integration ids — twelve combinations — refusing it with
+`Personal Access Tokens are not supported for this endpoint`. GitHub documents that PAT for the
+Copilot **CLI binary**, not the Copilot API. So the direct-send fallback added in the first
+update was wrong and has been removed: a 404 is now a hard failure whose message names the
+actual remedy.
+
+**The remedy: no token at all.** A workflow declaring `copilot-requests: write` in its
+`permissions:` block gets a `GITHUB_TOKEN` carrying Copilot entitlement, billed to the org that
+owns the repository — shipped by GitHub on 2026-07-02 precisely so CI would stop needing a PAT.
+Both workflows now declare the permission and pass `secrets.GITHUB_TOKEN` as
+`COPILOT_GITHUB_TOKEN`; the `COPILOT_GITHUB_TOKEN` repository secret should be deleted.
+Prerequisites are org-level and one-time: the org has Copilot, and the "Allow use of Copilot CLI
+billed to the organization" policy is enabled.
 
 Also added `npm run probe:copilot` (`scripts/probe-copilot.ts`): read-only `GET /models` across
-four hosts × three integration ids plus the exchange, redacting the credential from any output.
-Two wrong diagnoses in a row came from reasoning forward about this endpoint instead of probing
-it, so the probe is the standing answer to "which host works".
+four hosts × three integration ids plus the exchange, reporting the credential *kind* and
+redacting the credential itself from any output. Plus the **Probe Copilot access** workflow,
+which runs the same script with the workflow's own token — necessary because that token's
+Copilot entitlement does not exist outside a workflow that requested the permission, so the
+laptop probe structurally cannot test the path we now depend on.
 
-Still unrun: whether the direct path actually returns 200 for an org-granted seat. The probe
-answers it in one command.
+Three wrong diagnoses in a row came from reasoning forward about this endpoint instead of probing
+it — and none of the three asked whether a token was needed at all.
+
+**Still unrun, and it is the one thing that gates a first successful model call:** whether an
+Actions token is exchange-eligible. GitHub documents this path for the `copilot` CLI binary
+rather than for the Copilot API pi-ai calls; the two share the exchange route, so it should
+hold, but "should" is what the last three rounds were made of. Dispatch **Probe Copilot access**
+to find out. If it fails, the options in descending preference are a `gho_` device-flow token
+stored as a secret, a GitHub App user-to-server token, or shelling out to the `copilot` CLI.
 
 ## Phase 7 — Validation
 

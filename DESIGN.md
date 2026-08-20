@@ -253,18 +253,21 @@ So fallback moves up a level, to the workflow:
   continue-on-error: true
   env:
     FLUE_MODEL: ${{ vars.PRIMARY_MODEL }}    # github-copilot/claude-opus-4.7
-    COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+    COPILOT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # copilot-requests: write, no PAT
   run: npx flue run src/agents/issue-analyst.ts --message "Analyze issue #$ISSUE_NUMBER" --json | tee result.json
 
 - name: Run agent (fallback)
   if: steps.primary.outcome == 'failure'
   env:
     FLUE_MODEL: ${{ vars.FALLBACK_MODEL }}   # github-copilot/gpt-5.4
-    COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+    COPILOT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # copilot-requests: write, no PAT
   run: npx flue run src/agents/issue-analyst.ts --message "Analyze issue #$ISSUE_NUMBER" --json | tee result.json
 ```
 
-Both legs share the one model credential, because both models are served by Copilot. The diversity
+Both legs share the one model credential, because both models are served by Copilot. [corrected]
+That credential is the workflow's **own** `GITHUB_TOKEN`, not a PAT: a workflow declaring
+`copilot-requests: write` gets Copilot entitlement billed to the org that owns the repo, and a
+fine-grained PAT is refused by every Copilot inference host. See docs/models.md. The diversity
 is at the *model* level only — a capacity blip or a bad deploy on one model does not take out both
 attempts, but a vendor-level or Copilot-level outage does. `src/env.ts` rejects any specifier outside
 the `github-copilot` provider, and requires the exact `provider/model` shape, so the variable that

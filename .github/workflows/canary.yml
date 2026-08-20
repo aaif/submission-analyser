@@ -30,6 +30,8 @@ on:
 permissions:
   contents: read
   issues: read
+  # Grants Copilot inference on the built-in token; no repository write. See docs/models.md.
+  copilot-requests: write
 
 concurrency:
   group: canary
@@ -87,7 +89,11 @@ jobs:
         env:
           DRY_RUN: '1'
           FLUE_MODEL: ${{ matrix.model }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          # The model credential is the workflow's own token, not a PAT. A workflow with
+          # `copilot-requests: write` gets a GITHUB_TOKEN that carries Copilot entitlement
+          # billed to the organisation owning this repository; a fine-grained PAT is rejected
+          # by every Copilot inference host. See docs/models.md.
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail

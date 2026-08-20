@@ -1,0 +1,46 @@
+# Manual probe: does the credential this repo's workflows hold actually reach a model?
+#
+# Run this before debugging a canary failure. It answers the one question that matters and
+# cannot be answered from a laptop: the built-in GITHUB_TOKEN only carries Copilot entitlement
+# *inside a workflow that requested `copilot-requests: write`*, so its behaviour is not
+# reproducible locally at all. Every request the script makes is a read-only listing — no
+# model is invoked and nothing is charged.
+#
+# Third-party actions are pinned to commit SHAs; see the top of ci.yml for why.
+
+name: Probe Copilot access
+
+on:
+  workflow_dispatch:
+
+# `copilot-requests: write` is the entire point of this workflow: it is what turns the
+# workflow's own token into a credential that can make Copilot requests, billed to the
+# organisation that owns this repository. It grants no repository write.
+permissions:
+  contents: read
+  copilot-requests: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Set up Node
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The script redacts the credential from every line it prints, which matters because
+      # this output is exactly the kind of thing that gets pasted into an issue.
+      - name: Probe with the workflow's own token
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npm run probe:copilot

@@ -138,6 +138,15 @@ async function main(): Promise<void> {
     throw new Error(`${MODEL_CREDENTIAL} is not set.`);
   }
 
+  // The prefix before the first underscore, and nothing else. Which *kind* of credential
+  // this is decides the whole result — ghs_ (an Actions token) is exchange-eligible,
+  // github_pat_ is not — and every past round of confusion here came from not knowing which
+  // one was actually in the environment.
+  const kind = /^([A-Za-z]+_)/.exec(token)?.[1] ?? '(no recognised prefix)';
+  console.log(
+    `\nCredential kind: ${kind}  (ghs_ = Actions token, gho_ = OAuth, github_pat_ = PAT)`,
+  );
+
   console.log(`\nToken exchange (what src/providers/copilot-auth.ts does today):\n`);
   print([await probeExchange(token)]);
 

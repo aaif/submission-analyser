@@ -38,8 +38,13 @@ on:
 #
 # Note that this token cannot read the target repository's private issues either. That is
 # fine while the target is public; a private target needs a read-only PAT in GITHUB_TOKEN.
+#
+# `copilot-requests: write` is what lets the built-in GITHUB_TOKEN reach a model at all. It
+# grants no repository write of any kind — it authorises Copilot inference requests, billed to
+# the organisation that owns this repo — so it does not reopen the class of attack above.
 permissions:
   contents: read
+  copilot-requests: write
 
 # Keyed on both repo and issue, since one analyst repo may serve several targets.
 concurrency:
@@ -115,7 +120,11 @@ jobs:
         continue-on-error: true
         env:
           FLUE_MODEL: ${{ vars.PRIMARY_MODEL || 'github-copilot/claude-opus-4.7' }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          # The model credential is the workflow's own token, not a PAT. A workflow with
+          # `copilot-requests: write` gets a GITHUB_TOKEN that carries Copilot entitlement
+          # billed to the organisation owning this repository; a fine-grained PAT is rejected
+          # by every Copilot inference host. See docs/models.md.
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
@@ -139,7 +148,11 @@ jobs:
         if: steps.primary.outcome == 'failure'
         env:
           FLUE_MODEL: ${{ vars.FALLBACK_MODEL || 'github-copilot/gpt-5.4' }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          # The model credential is the workflow's own token, not a PAT. A workflow with
+          # `copilot-requests: write` gets a GITHUB_TOKEN that carries Copilot entitlement
+          # billed to the organisation owning this repository; a fine-grained PAT is rejected
+          # by every Copilot inference host. See docs/models.md.
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
