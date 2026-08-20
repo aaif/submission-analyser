@@ -18,7 +18,7 @@ and the only model credential in the project is:
 
 | Provider id      | Credential             | Where it comes from                    |
 | ---------------- | ---------------------- | -------------------------------------- |
-| `github-copilot` | `COPILOT_GITHUB_TOKEN` | Fine-grained PAT with Copilot Requests |
+| `github-copilot` | `COPILOT_GITHUB_TOKEN` | Fine-grained PAT, personal account, **Copilot Requests: read-only** (the only level offered) |
 
 The provider is a pi-ai built-in that `flue run` registers for us — there is no hand-written
 provider module in this repository. (If you are reading an older draft: `COPILOT_TOKEN` is
@@ -80,8 +80,16 @@ seconds, not after an analysis.
 **This is the largest residual risk in the project, and it is a one-line fix.**
 
 The built-in `github-copilot` provider points at the **individual** endpoint,
-`https://api.individual.githubcopilot.com`. A business or enterprise Copilot entitlement is
-served from a different host:
+`https://api.individual.githubcopilot.com` — verified in
+`node_modules/@earendil-works/pi-ai/dist/providers/github-copilot.js`, and on all 32 model
+entries individually. Note that this applies to the **api-key path**, which is the one this
+project uses: pi-ai's `envApiKeyAuth` sends `COPILOT_GITHUB_TOKEN` verbatim as the bearer to
+that fixed host. Its *OAuth* path derives the host from the `proxy-ep` field of an exchanged
+Copilot token instead, so it adapts automatically — but that path needs an interactive device
+flow and a refreshable credential, which a one-shot CI job does not have. We get the fixed
+host, and therefore this failure mode.
+
+A business or enterprise Copilot entitlement is served from a different host:
 
 - `https://api.business.githubcopilot.com`
 - `https://api.enterprise.githubcopilot.com`
@@ -115,11 +123,18 @@ Registration performs no I/O, so a wrong host still surfaces only on the first m
 The cheap way to test a candidate host is the **Model canary** workflow: it is a dry run, it
 publishes nothing, and it can be dispatched by hand as often as you like.
 
-The other place Copilot drift shows up is **headers**. The catalog's model entries carry
-`Copilot-Integration-Id`, `Editor-Version` and a `User-Agent`; this endpoint is not officially
-documented for third-party programmatic use, and those values have had to move before. If the
-host override does not fix it, upgrade `@earendil-works/pi-ai` before you start editing
-headers by hand — someone has probably already tracked the change.
+The other place Copilot drift shows up is **headers**. Every model entry in the catalog
+carries its own `headers` — `Copilot-Integration-Id: vscode-chat`, `Editor-Version`,
+`Editor-Plugin-Version` and a `User-Agent` naming a VS Code Copilot Chat build (verified: 32
+of 32 model entries). That is pi-ai presenting itself as the editor plugin, and those values
+have had to move before as GitHub tightened the endpoint. If the host override does not fix
+a 401, upgrade `@earendil-works/pi-ai` before editing headers by hand — someone has probably
+already tracked the change.
+
+Worth knowing which way the wind is blowing here: GitHub now documents `COPILOT_GITHUB_TOKEN`
+as the environment variable for authenticating Copilot CLI with a fine-grained PAT, so a PAT
+against this endpoint is a supported pattern rather than a pure reverse-engineering bet. The
+editor-impersonating headers are still pi-ai's own choice, not a documented contract.
 
 ## Cost
 

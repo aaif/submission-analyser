@@ -71,12 +71,32 @@ has a Copilot entitlement.
    admin if unsure, because a token from an account with no entitlement fails at the first
    model request, not at registration.
 2. https://github.com/settings/personal-access-tokens → **Generate new token** (fine-grained).
-3. Resource owner: your own account. Repository access: **Public repositories (read-only)** is
-   enough — this token is for model access, not repository access.
-4. Account permissions → **Copilot Requests**: *Read and write*. Grant nothing else.
+   It must be **fine-grained**: classic `ghp_` tokens are not accepted for Copilot requests.
+3. Resource owner: **your own personal account**, not the organisation. Repository access:
+   **Public repositories (read-only)** is enough — this token is for model access, not
+   repository access.
+4. Account permissions → **Copilot Requests**: *Read-only*. Grant nothing else.
 5. Expiry: 90 days or less. Put the renewal date in a calendar; the daily canary will tell
    you when you have forgotten, but a calendar entry is cheaper than a red Tuesday.
 6. Save the value as the `COPILOT_GITHUB_TOKEN` secret.
+
+**Read-only is not a downgrade — it is the only level GitHub offers.** There is no
+read-and-write for *Copilot Requests*, and the name misleads: the permission grants the
+ability to *make* Copilot requests, which reads like a write. An earlier version of this
+document said "read and write" and sent at least one operator looking for a control that does
+not exist.
+
+**The resource owner must be a personal account.** *Copilot Requests* is a user-level
+permission and does not appear at all on an organisation-owned token, so if the permission is
+missing from the list rather than merely read-only, the resource-owner dropdown is set to the
+org. Two consequences worth being deliberate about, because there is no service-account option
+here:
+
+- Requests count against **that person's** premium-request allowance. The analyst's model
+  spend lands on whoever minted the token, not on the org.
+- The token is a personal credential in a shared repository's secrets, and it stops working
+  when that person leaves. Pick the holder accordingly, and keep the whole thing bounded by
+  the cost controls in [docs/models.md](models.md).
 
 If model calls come back **401 or 404**, do not start rotating tokens: read
 [docs/models.md](models.md) first. The built-in provider points at the *individual* Copilot
