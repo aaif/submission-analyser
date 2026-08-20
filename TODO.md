@@ -253,12 +253,20 @@ laptop probe structurally cannot test the path we now depend on.
 Three wrong diagnoses in a row came from reasoning forward about this endpoint instead of probing
 it — and none of the three asked whether a token was needed at all.
 
-**Still unrun, and it is the one thing that gates a first successful model call:** whether an
-Actions token is exchange-eligible. GitHub documents this path for the `copilot` CLI binary
-rather than for the Copilot API pi-ai calls; the two share the exchange route, so it should
-hold, but "should" is what the last three rounds were made of. Dispatch **Probe Copilot access**
-to find out. If it fails, the options in descending preference are a `gho_` device-flow token
-stored as a secret, a GitHub App user-to-server token, or shelling out to the `copilot` CLI.
+**[measured]** An Actions token is **not** exchange-eligible — the exchange 404s for it, same as
+for a PAT. That is the shape of the feature rather than a fault: the entitlement rides on
+`copilot-requests: write`, so there is nothing to exchange, and the token goes straight to
+`https://api.githubcopilot.com`. `copilot-auth.ts` now branches on credential class, which is
+sound rather than another guess because the refusal a PAT gets names the class:
+`Personal Access Tokens are not supported for this endpoint`. An installation token is not a
+PAT, so the twelve measured refusals do not cover it.
+
+**Still unrun, and it is the one thing that gates a first successful model call:** whether the
+direct send is accepted. GitHub documents this path for the `copilot` CLI binary rather
+than for the Copilot API pi-ai calls, so the host may differ. Dispatch **Probe Copilot access**:
+it reports all four hosts at once, and the winner goes in via `COPILOT_BASE_URL`. If none
+accepts it, the options in descending preference are a `gho_` device-flow token stored as a
+secret, a GitHub App user-to-server token, or shelling out to the `copilot` CLI binary.
 
 ## Phase 7 — Validation
 

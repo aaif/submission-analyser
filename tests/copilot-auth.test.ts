@@ -14,6 +14,13 @@ import {
  */
 
 const PAT = 'github_pat_NotARealTokenValue0000000000';
+/**
+ * A stand-in Actions installation token. The `ghs_` prefix is the whole point of the fixture:
+ * it is what distinguishes a credential the inference hosts might accept from one they are
+ * documented to refuse.
+ */
+const ACTIONS_TOKEN = 'ghs_NotARealInstallationToken00000000';
+
 const EXCHANGED = 'tid=abc;exp=1234567890;proxy-ep=proxy.individual.githubcopilot.com;ssc=1';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -180,10 +187,24 @@ describe('resolveCopilotSession', () => {
     });
   });
 
-  // There is no direct-send fallback, because there is nowhere to send it: probe:copilot
-  // found all four *.githubcopilot.com hosts reject a PAT under every integration id. So a
-  // 404 is a dead end, and the error has to carry the actual remedy.
-  it('fails with the remedy when the credential is not exchange-eligible', async () => {
+  // An Actions installation token is not a PAT, and the inference hosts refuse PATs *by
+  // name*, so the twelve measured refusals do not apply to it. A 404 from the exchange is
+  // therefore not a dead end for this credential class — the entitlement rides on the
+  // workflow's `copilot-requests: write` permission, not on an exchanged token.
+  it('sends a non-PAT credential directly when the exchange does not apply', async () => {
+    const { impl } = stubFetch(() => jsonResponse({ message: 'Not Found' }, 404));
+    const session = await resolveCopilotSession(ACTIONS_TOKEN, impl);
+
+    expect(session).toEqual({
+      token: ACTIONS_TOKEN,
+      baseUrl: 'https://api.githubcopilot.com',
+      strategy: 'direct',
+    });
+  });
+
+  // A PAT gets no such benefit of the doubt: every host was measured refusing one, so the
+  // error has to carry the actual remedy rather than fail again one HTTP call later.
+  it('fails with the remedy when the credential is a PAT', async () => {
     const { impl } = stubFetch(() => jsonResponse({ message: 'Not Found' }, 404));
     const error = await thrownAsync(() => resolveCopilotSession(PAT, impl));
 
@@ -191,6 +212,17 @@ describe('resolveCopilotSession', () => {
     expect((error as EnvError).message).toContain('copilot-requests: write');
     expect((error as EnvError).message).toContain('GITHUB_TOKEN');
     expect((error as EnvError).message).not.toContain(PAT);
+  });
+
+  // Classic tokens are refused for Copilot requests too, so they take the PAT branch rather
+  // than the optimistic direct one.
+  it('treats a classic ghp_ token as a PAT', async () => {
+    const { impl } = stubFetch(() => jsonResponse({ message: 'Not Found' }, 404));
+    const error = await thrownAsync(() =>
+      resolveCopilotSession('ghp_NotARealClassicToken0000000000', impl),
+    );
+
+    expect(error).toBeInstanceOf(EnvError);
   });
 
   // A rejection is not a fallback. Retrying a 401 against another host would turn a clear

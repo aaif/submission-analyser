@@ -121,7 +121,9 @@ ask:
 ### Verifying it
 
 `npm run probe:copilot` from a laptop cannot answer this, because the entitlement only exists
-inside a workflow that requested the permission. Dispatch the **Probe Copilot access**
+inside a workflow that requested the permission. Note that the Actions token does **not** go
+through the token exchange — that route 404s for it, and correctly so, since the entitlement
+comes from the workflow permission rather than from an exchanged editor token. Dispatch the **Probe Copilot access**
 workflow instead (`workflow_dispatch`, read-only, invokes no model, charges nothing). Its first
 line names the kind of credential in the environment — `ghs_` Actions token, `gho_` OAuth,
 `github_pat_` PAT — which is the single fact worth checking before theorising about anything

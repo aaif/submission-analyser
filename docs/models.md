@@ -99,9 +99,18 @@ Nothing is stored as a secret; the workflows pass `secrets.GITHUB_TOKEN` as
 it authorises inference requests — so it does not weaken the read-only posture the threat
 model rests on.
 
-One caveat worth stating plainly: GitHub documents this for the `copilot` CLI binary, not for
-the Copilot API that pi-ai calls. The two share the token-exchange route, so an Actions token
-being exchange-eligible is the expected outcome rather than a certainty. **`npm run
+**The Actions token is not exchange-eligible.** Measured: the exchange 404s for it, exactly as
+it does for a PAT. That is not a problem, and it is the shape of the whole feature — the
+entitlement rides on the workflow's `copilot-requests: write` permission, not on an exchanged
+editor token, so there is nothing to exchange. The token goes straight to
+`https://api.githubcopilot.com`.
+
+What makes that worth attempting rather than a fourth round of host-guessing is that the
+refusal a PAT gets names the credential *class*: `Personal Access Tokens are not supported for
+this endpoint`. An Actions token is an installation token, not a PAT, so the twelve measured
+refusals say nothing about it. `copilot-auth.ts` encodes exactly that distinction — a 404 for a
+`github_pat_`/`ghp_` credential is a hard failure with the remedy, a 404 for anything else
+selects the direct send. **`npm run
 probe:copilot` cannot answer this from a laptop** — the entitlement only exists inside a
 workflow that requested the permission — so there is a `Probe Copilot access` workflow
 (`workflow_dispatch`) that runs the same probe with the workflow's own token. Run it first;
@@ -120,13 +129,13 @@ them at agent-module load:
 
 | Credential | Path | Host |
 | --- | --- | --- |
-| Actions token with `copilot-requests: write` | Exchange it | from the token's `proxy-ep` |
+| Actions token with `copilot-requests: write` | Send it directly | `https://api.githubcopilot.com` |
 | `gho_` OAuth token from a Copilot client | Exchange it | from the token's `proxy-ep` |
 | Fine-grained PAT | **None — fails with the remedy** | — |
 
-A 404 from the exchange is now a hard failure naming `copilot-requests: write`, not a fallback:
-there is nowhere to fall back *to*, and failing at load beats one more opaque 400 mid-run.
-`COPILOT_BASE_URL` overrides the host if GitHub moves it. Each run logs one line naming the
+A 404 from the exchange means only that the exchange does not apply; what happens next depends
+on the credential class, per above. `COPILOT_BASE_URL` overrides the host — which is the knob to
+reach for if the **Probe Copilot access** workflow reports a different host accepting the token. Each run logs one line naming the
 strategy and host, never the credential.
 
 We did not adopt pi-ai's OAuth path because it needs an interactive browser login to seed and
@@ -248,10 +257,12 @@ So the order to check now is:
    PAT — and a PAT cannot reach a model at all, so if that is what is there, remove the
    `COPILOT_GITHUB_TOKEN` secret and let the workflow's own token through.
 3. **What did the exchange say?** 404 means the credential authenticated but is not
-   exchange-eligible — the failure names `copilot-requests: write` because that is the fix.
-   401 or 403 means the credential itself was refused: expired, revoked, or the org policy is
-   off.
-4. **Headers.** Every model entry carries `Copilot-Integration-Id: vscode-chat`,
+   exchange-eligible; expected for both an Actions token and a PAT, and only a hard failure for
+   the PAT. 401 or 403 means the credential itself was refused: expired, revoked, or the org
+   policy is off — 403 in particular points at the org policy rather than at the token.
+4. **Which host accepts it?** If the direct send is refused, dispatch **Probe Copilot access**
+   and set `COPILOT_BASE_URL` to whichever of the four hosts returns 200.
+5. **Headers.** Every model entry carries `Copilot-Integration-Id: vscode-chat`,
    `Editor-Version`, `Editor-Plugin-Version` and a `User-Agent` naming a VS Code Copilot Chat
    build (32 of 32 entries). That is pi-ai presenting itself as the editor plugin, and those
    values have had to move before as GitHub tightened the endpoint. `copilot-auth.ts` copies
