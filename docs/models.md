@@ -7,30 +7,46 @@ their version numbers:
 
 ```
 github-copilot/claude-opus-4.7
-google/gemini-2.5-pro
+github-copilot/gpt-5.4
 ```
 
-Both providers are pi-ai built-ins that `flue run` registers for us — there is no
-hand-written provider module in this repository. Each provider declares which environment
-variable holds its credential, and `src/env.ts` checks it up front:
+## One provider: GitHub Copilot
 
-| Provider id      | Credential             | Where it comes from                        |
-| ---------------- | ---------------------- | ------------------------------------------ |
-| `github-copilot` | `COPILOT_GITHUB_TOKEN` | Fine-grained PAT with Copilot Requests     |
-| `google`         | `GEMINI_API_KEY`       | AI Studio API key                          |
+**All model access goes through GitHub Copilot.** `src/env.ts` enforces it —
+`requireModelCredential()` rejects any specifier whose provider id is not `github-copilot`,
+and the only model credential in the project is:
 
-(If you are reading an older draft: `COPILOT_TOKEN` and `GOOGLE_GENERATIVE_AI_API_KEY` are
-both wrong. The names above are the ones the providers actually read, and the ones
-`src/env.ts` validates.)
+| Provider id      | Credential             | Where it comes from                    |
+| ---------------- | ---------------------- | -------------------------------------- |
+| `github-copilot` | `COPILOT_GITHUB_TOKEN` | Fine-grained PAT with Copilot Requests |
+
+The provider is a pi-ai built-in that `flue run` registers for us — there is no hand-written
+provider module in this repository. (If you are reading an older draft: `COPILOT_TOKEN` is
+wrong, and so is the `google` / `GEMINI_API_KEY` fallback leg. Copilot serves the fallback
+model too, so that second credential bought nothing.)
+
+The check is in code rather than only in this document because `FLUE_MODEL` is supplied from a
+repository **variable**, which any maintainer can change in one click with no review, and
+`flue run` registers *every* pi-ai built-in provider unconditionally. Without the guard,
+`FLUE_MODEL=anthropic/...` plus an `ANTHROPIC_API_KEY` secret would quietly work — and start
+sending issue text to a vendor nobody agreed to send it to.
 
 ## The two configured models
+
+Copilot's catalog carries 32 models from four vendors, so the fallback still gets real vendor
+diversity — by model, not by provider.
 
 - **Primary — `github-copilot/claude-opus-4.7`.** 1M-token context window, $5/M input and
   $25/M output at the catalog's listed rates. This is also `DEFAULT_MODEL` in `src/env.ts`,
   so an unset `FLUE_MODEL` lands here.
-- **Fallback — `google/gemini-2.5-pro`.** A genuinely different vendor on a genuinely
-  different network path, which is the point: a fallback that shares an outage with the
-  primary is not a fallback.
+- **Fallback — `github-copilot/gpt-5.4`.** A different lab (1M context, $2.5/M in, $15/M
+  out), so a Claude-side outage or a bad Claude deploy does not take out both legs.
+
+What this fallback does *not* cover is Copilot itself: if the Copilot endpoint is down or the
+token is rejected, both legs fail together. That is the accepted cost of one credential. The
+failure is loud — the assert step turns it into a red run and a comment on the issue — and the
+remedy is to run the analysis by hand, not to keep a second vendor account warm all year for
+an outage that has not happened.
 
 The workflows read these from the repo **variables** `PRIMARY_MODEL` and `FALLBACK_MODEL`,
 falling back to the values above when unset. Variables, not secrets: a model id is not
@@ -52,12 +68,12 @@ is a single submission, so there is no mid-run swap available. See DESIGN.md §4
 So to try another model for one run:
 
 ```bash
-FLUE_MODEL=google/gemini-2.5-pro npm run agent -- --id 123 --message 'Analyse issue #123'
+FLUE_MODEL=github-copilot/gpt-5.4 npm run agent -- --id 123 --message 'Analyse issue #123'
 ```
 
-`requireModelCredential()` maps the provider id to its credential variable and throws before
-the run spends a single token if it is missing — a typo in a specifier fails in seconds, not
-after an analysis.
+`requireModelCredential()` throws before the run spends a single token if the provider is not
+`github-copilot` or if `COPILOT_GITHUB_TOKEN` is missing — a typo in a specifier fails in
+seconds, not after an analysis.
 
 ## When Copilot returns 401 or 404 — read this first
 

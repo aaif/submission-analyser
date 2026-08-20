@@ -288,11 +288,33 @@ describe('env', () => {
       expect(() => requireModelCredential('github-copilot/claude-opus-4.7')).not.toThrow();
     });
 
-    it('demands GEMINI_API_KEY for a google model', () => {
-      const error = thrown(() => requireModelCredential('google/gemini-3-pro'));
-      expectNamedNotEchoed(error, 'GEMINI_API_KEY', SENTINEL);
+    // All model access goes through Copilot, and the guard is what makes that true rather
+    // than merely documented: FLUE_MODEL comes from a repo variable, and `flue run`
+    // registers every pi-ai built-in provider, so an unguarded specifier would quietly
+    // route issue text to another vendor.
+    it('rejects a provider other than github-copilot, even with its credential present', () => {
+      process.env['COPILOT_GITHUB_TOKEN'] = SENTINEL;
       process.env['GEMINI_API_KEY'] = SENTINEL;
-      expect(() => requireModelCredential('google/gemini-3-pro')).not.toThrow();
+      process.env['ANTHROPIC_API_KEY'] = SENTINEL;
+      for (const specifier of [
+        'google/gemini-3-pro',
+        'anthropic/claude-opus-4-5',
+        'openai/gpt-5',
+      ]) {
+        const error = thrown(() => requireModelCredential(specifier));
+        expect(error).toBeInstanceOf(EnvError);
+        const message = String(error);
+        expect(message).toContain('github-copilot');
+        // The specifier is echoed because a model id is not a credential; the credential
+        // values that happen to be set must still not appear.
+        expect(message).toContain(specifier);
+        expect(message).not.toContain(SENTINEL);
+      }
+    });
+
+    it('rejects a bare model id with no provider', () => {
+      process.env['COPILOT_GITHUB_TOKEN'] = SENTINEL;
+      expect(() => requireModelCredential('claude-opus-4.7')).toThrow();
     });
 
     it('demands nothing for a faux model', () => {
@@ -300,18 +322,15 @@ describe('env', () => {
       expect(() => requireModelCredential(FAUX_MODEL)).not.toThrow();
     });
 
-    it('defers to the provider for an unrecognised provider id', () => {
-      expect(() => requireModelCredential('some-new-provider/model')).not.toThrow();
-      expect(() => requireModelCredential('')).not.toThrow();
-    });
-
-    it('covers the remaining declared providers', () => {
-      expect(thrown(() => requireModelCredential('anthropic/x'))).toBeInstanceOf(EnvError);
-      expect(thrown(() => requireModelCredential('openai/x'))).toBeInstanceOf(EnvError);
-      process.env['ANTHROPIC_API_KEY'] = SENTINEL;
-      process.env['OPENAI_API_KEY'] = SENTINEL;
-      expect(() => requireModelCredential('anthropic/x')).not.toThrow();
-      expect(() => requireModelCredential('openai/x')).not.toThrow();
+    // Fails closed. An unrecognised provider id is more likely a typo or a newly-added
+    // pi-ai built-in than something this project meant to call, and either way the run
+    // should stop before it sends an issue body somewhere unreviewed.
+    it('rejects an unrecognised provider id and an empty specifier', () => {
+      process.env['COPILOT_GITHUB_TOKEN'] = SENTINEL;
+      expect(thrown(() => requireModelCredential('some-new-provider/model'))).toBeInstanceOf(
+        EnvError,
+      );
+      expect(thrown(() => requireModelCredential(''))).toBeInstanceOf(EnvError);
     });
   });
 
@@ -389,11 +408,10 @@ describe('env', () => {
       process.env['GOOGLE_SERVICE_ACCOUNT_JSON'] = `${SENTINEL}-google`;
       process.env['DISCORD_WEBHOOK_URL'] = `${SENTINEL}-discord`;
       process.env['COPILOT_GITHUB_TOKEN'] = `${SENTINEL}-copilot`;
-      process.env['GEMINI_API_KEY'] = `${SENTINEL}-gemini`;
       const values = knownSecretValues();
-      expect(values).toHaveLength(6);
+      expect(values).toHaveLength(5);
       expect(values).toContain(`${SENTINEL}-github`);
-      expect(values).toContain(`${SENTINEL}-gemini`);
+      expect(values).toContain(`${SENTINEL}-copilot`);
     });
 
     it('does not collect non-secret configuration', () => {

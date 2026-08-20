@@ -85,10 +85,11 @@ jobs:
       # operator switching models mid-incident should be able to see and edit the current
       # value in one click. Specifiers use dots — `github-copilot/claude-opus-4.7`.
       #
-      # Secrets are asymmetric per step on purpose. The primary receives COPILOT_GITHUB_TOKEN
-      # and not GEMINI_API_KEY; the fallback the reverse. Each leg is handed exactly the
-      # model credential it can use, so a compromised or misbehaving run cannot reach the
-      # other provider's key at all.
+      # Both legs run through GitHub Copilot and so share one credential,
+      # COPILOT_GITHUB_TOKEN. The fallback buys vendor diversity by model, not by provider:
+      # Copilot's catalog spans four vendors, so a Claude-side outage does not take out both
+      # legs, and there is no second API key to provision, rotate, or leak. `src/env.ts`
+      # rejects any specifier outside the `github-copilot` provider.
       - name: Analyse (primary model)
         id: primary
         continue-on-error: true
@@ -114,8 +115,8 @@ jobs:
         id: fallback
         if: steps.primary.outcome == 'failure'
         env:
-          FLUE_MODEL: ${{ vars.FALLBACK_MODEL || 'google/gemini-2.5-pro' }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FLUE_MODEL: ${{ vars.FALLBACK_MODEL || 'github-copilot/gpt-5.4' }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}

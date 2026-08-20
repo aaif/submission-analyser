@@ -18,7 +18,6 @@ const SECRET_VARS = [
   'GOOGLE_SERVICE_ACCOUNT_JSON',
   'DISCORD_WEBHOOK_URL',
   'COPILOT_GITHUB_TOKEN',
-  'GEMINI_API_KEY',
 ] as const;
 
 export class EnvError extends Error {
@@ -144,7 +143,17 @@ export function discordWebhookUrl(): string {
   return value;
 }
 
-export const DEFAULT_MODEL = 'github-copilot/claude-opus-4.7';
+/**
+ * All model access goes through GitHub Copilot — one provider, one credential.
+ *
+ * Copilot's catalog carries 32 models from four vendors, so the fallback still gets a
+ * genuinely different vendor (an outage at one lab does not take out both legs) without a
+ * second API key, a second billing relationship, and a second provider integration to keep
+ * working. See docs/models.md.
+ */
+export const MODEL_PROVIDER = 'github-copilot';
+export const DEFAULT_MODEL = `${MODEL_PROVIDER}/claude-opus-4.7`;
+export const FALLBACK_MODEL = `${MODEL_PROVIDER}/gpt-5.4`;
 export const FAUX_MODEL = 'faux/faux-1';
 
 export function modelSpecifier(): string {
@@ -152,26 +161,33 @@ export function modelSpecifier(): string {
   return read('FLUE_MODEL') ?? DEFAULT_MODEL;
 }
 
-/**
- * Env var each provider's credentials come from, as declared by the pi-ai built-in
- * providers that `flue run` registers. Checked up front so a missing key fails before
- * the run spends a single token, rather than as a provider error mid-analysis.
- */
-const PROVIDER_CREDENTIAL: Record<string, string> = {
-  'github-copilot': 'COPILOT_GITHUB_TOKEN',
-  google: 'GEMINI_API_KEY',
-  anthropic: 'ANTHROPIC_API_KEY',
-  openai: 'OPENAI_API_KEY',
-};
+/** The one credential, as declared by the pi-ai built-in provider `flue run` registers. */
+export const MODEL_CREDENTIAL = 'COPILOT_GITHUB_TOKEN';
 
+/**
+ * Enforces the single-provider rule and checks the credential up front, so a
+ * misconfiguration fails before the run spends a token rather than as a provider error
+ * mid-analysis.
+ *
+ * The provider check is here, in code, and not only in docs: `FLUE_MODEL` is supplied from a
+ * repository *variable*, which any maintainer can edit in one click with no review. `flue run`
+ * registers every pi-ai built-in provider unconditionally, so `FLUE_MODEL=anthropic/...` plus
+ * an `ANTHROPIC_API_KEY` secret would quietly work and route issue text to a provider nobody
+ * agreed to send it to. Fail instead, naming the offending specifier — a model id is not a
+ * credential, so it is safe to echo.
+ */
 export function requireModelCredential(specifier: string): void {
   const providerId = specifier.split('/')[0] ?? '';
   if (providerId === 'faux') return;
-  const varName = PROVIDER_CREDENTIAL[providerId];
-  if (varName === undefined) return; // Unknown provider: let Pi's own auth report it.
-  if (read(varName) === undefined) {
+  if (providerId !== MODEL_PROVIDER) {
     throw new EnvError(
-      `Model "${specifier}" needs ${varName}, which is not set. See docs/secrets.md.`,
+      `Model "${specifier}" uses provider "${providerId}", but all model access must go ` +
+        `through "${MODEL_PROVIDER}". See docs/models.md.`,
+    );
+  }
+  if (read(MODEL_CREDENTIAL) === undefined) {
+    throw new EnvError(
+      `Model "${specifier}" needs ${MODEL_CREDENTIAL}, which is not set. See docs/secrets.md.`,
     );
   }
 }

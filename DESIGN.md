@@ -188,9 +188,9 @@ The earlier draft devoted this section to writing a custom Pi provider for Copil
 does not exist.**
 
 `flue run` calls `registerDefaultProviders()` unconditionally, which registers every pi-ai built-in.
-pi-ai 0.84.2 ships a `github-copilot` provider (32 models, including `claude-opus-4.7`) and a
-`google` provider (including `gemini-2.5-pro`), each with baseUrl, headers, `contextWindow`,
-`maxTokens` and cost already in the catalog. So:
+pi-ai 0.84.2 ships a `github-copilot` provider with 32 models — Claude, GPT, Gemini and Grok
+families — each with baseUrl, headers, `contextWindow`, `maxTokens` and cost already in the
+catalog. So:
 
 - There is no `src/providers/register.ts`, and no side-effecting import at the top of the agent.
 - The **"CRITICAL" `setProvider()`-in-`app.ts` warning no longer applies to anything.** It was real
@@ -207,7 +207,18 @@ wrong, and each would have failed at model resolution:
 | Provider id | `github-copilot` | `copilot` |
 | Model specifier | `github-copilot/claude-opus-4.7` (dots) | `copilot/claude-opus-4-7` |
 | Copilot credential | `COPILOT_GITHUB_TOKEN` | `COPILOT_TOKEN` |
-| Gemini credential | `GEMINI_API_KEY` | `GOOGLE_GENERATIVE_AI_API_KEY` |
+| Fallback model | `github-copilot/gpt-5.4` | `google/gemini-2.5-pro` + `GOOGLE_GENERATIVE_AI_API_KEY` |
+
+**[corrected] One provider, not two.** Earlier drafts, and my own first implementation, ran the
+fallback leg on `google/gemini-2.5-pro` with a second credential. That was wasted surface: Copilot's
+own catalog spans four vendors, so `github-copilot/gpt-5.4` delivers the same "different lab, so not
+the same outage" property with one API key, one billing relationship, and one provider integration to
+keep working. `src/env.ts` now *enforces* the single provider — `requireModelCredential()` throws on
+any specifier outside `github-copilot`. That check has to be in code, not just here: `FLUE_MODEL`
+comes from a repo variable editable in one click, and `flue run` registers every built-in provider,
+so an unguarded specifier plus a stray API-key secret would quietly route issue bodies to a vendor
+nobody signed off on. What this does *not* buy is resilience to a Copilot outage; both legs fail
+together, which is the accepted price and is documented in docs/models.md.
 
 **The one residual model-access risk.** The built-in Copilot baseUrl is the *individual* endpoint,
 `https://api.individual.githubcopilot.com`. A business or enterprise entitlement may require
@@ -240,14 +251,15 @@ So fallback moves up a level, to the workflow:
 - name: Run agent (fallback)
   if: steps.primary.outcome == 'failure'
   env:
-    FLUE_MODEL: ${{ vars.FALLBACK_MODEL }}   # google/gemini-2.5-pro
-    GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    FLUE_MODEL: ${{ vars.FALLBACK_MODEL }}   # github-copilot/gpt-5.4
+    COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
   run: npx flue run src/agents/issue-analyst.ts --message "Analyze issue #${{ github.event.issue.number }}" --json | tee result.json
 ```
 
-Note the **asymmetric per-step secrets** — the primary step cannot see the Gemini key and the
-fallback cannot see the Copilot token. `src/env.ts` demands only the credential the selected provider
-actually needs, which is what makes that split possible.
+Both legs share the one model credential, because both models are served by Copilot. The diversity
+is at the *model* level: a Claude-side outage or a bad Claude deploy does not take out both attempts.
+`src/env.ts` rejects any specifier outside the `github-copilot` provider, so the variable that
+selects the model cannot be used to introduce a new one.
 
 **`continue-on-error` needs a matching assertion or it silently inverts the design.** With it set,
 the job reports success when *both* model steps fail. So a final, non-`continue-on-error` step parses

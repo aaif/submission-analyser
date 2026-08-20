@@ -100,8 +100,8 @@ jobs:
         id: fallback
         if: steps.primary.outcome == 'failure'
         env:
-          FLUE_MODEL: ${{ vars.FALLBACK_MODEL || 'google/gemini-2.5-pro' }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FLUE_MODEL: ${{ vars.FALLBACK_MODEL || 'github-copilot/gpt-5.4' }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}

@@ -47,7 +47,7 @@ jobs:
           - leg: primary
             model: ${{ vars.PRIMARY_MODEL || 'github-copilot/claude-opus-4.7' }}
           - leg: fallback
-            model: ${{ vars.FALLBACK_MODEL || 'google/gemini-2.5-pro' }}
+            model: ${{ vars.FALLBACK_MODEL || 'github-copilot/gpt-5.4' }}
 
     name: canary (${{ matrix.leg }})
 
@@ -78,14 +78,12 @@ jobs:
       # credentials are deliberately absent from this step — an unnecessary credential in a
       # daily scheduled job is just a wider window.
       #
-      # Each leg gets only its own provider credential. `env.ts` treats an empty string as
-      # unset, so the inactive one is genuinely absent rather than blank-but-present.
+      # Both legs are Copilot models, so both use the one model credential.
       - name: Analyse (dry run)
         env:
           DRY_RUN: '1'
           FLUE_MODEL: ${{ matrix.model }}
-          COPILOT_GITHUB_TOKEN: ${{ matrix.leg == 'primary' && secrets.COPILOT_GITHUB_TOKEN || '' }}
-          GEMINI_API_KEY: ${{ matrix.leg == 'fallback' && secrets.GEMINI_API_KEY || '' }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -o pipefail

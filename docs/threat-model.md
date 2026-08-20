@@ -2,9 +2,10 @@
 
 ## Assets
 
-1. **Credentials.** `COPILOT_GITHUB_TOKEN`, `GEMINI_API_KEY`,
-   `GOOGLE_SERVICE_ACCOUNT_JSON`, `DISCORD_WEBHOOK_URL` (the URL *is* the credential), and the
-   run's `GITHUB_TOKEN`.
+1. **Credentials.** `COPILOT_GITHUB_TOKEN`, `GOOGLE_SERVICE_ACCOUNT_JSON`,
+   `DISCORD_WEBHOOK_URL` (the URL *is* the credential), and the run's `GITHUB_TOKEN`. All
+   model access goes through GitHub Copilot, so there is exactly one model credential to
+   protect — see [models.md](models.md).
 2. **The repository.** Its contents, and — more sharply — the workflow files in
    `.github/workflows/`, which decide what runs with those credentials.
 3. **Trusted publishing identities.** The agent writes into three places where a human will

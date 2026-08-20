@@ -31,7 +31,6 @@ const SECRET_VARS = [
   'GOOGLE_SERVICE_ACCOUNT_JSON',
   'DISCORD_WEBHOOK_URL',
   'COPILOT_GITHUB_TOKEN',
-  'GEMINI_API_KEY',
 ];
 
 describe('secret scanning', () => {
@@ -81,7 +80,7 @@ describe('secret scanning', () => {
 
   it('matches the live value of a secret-bearing env var exactly', () => {
     const sentinel = 'SENTINEL-live-env-value-do-not-leak';
-    process.env['GEMINI_API_KEY'] = sentinel;
+    process.env['COPILOT_GITHUB_TOKEN'] = sentinel;
     expect(findSecret(`the token is ${sentinel}, apparently`)).toBe('live-env-secret');
     // A value only present in the environment, in no recognisable shape, is still caught.
     expect(findSecret('the token is SENTINEL-live-env-value-do-not-lea')).toBeNull();

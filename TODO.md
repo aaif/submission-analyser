@@ -26,7 +26,8 @@ correction is visible rather than looking like an omission):
 
 The premise was that we had to build and validate a Copilot endpoint ourselves. We do not. pi-ai
 0.84.2 ships a built-in `github-copilot` provider with 32 models, and a `google` provider covering
-`gemini-2.5-pro` — baseUrl, headers, `contextWindow`, `maxTokens` and cost all already in the
+32 models across the Claude, GPT, Gemini and Grok families — baseUrl, headers,
+`contextWindow`, `maxTokens` and cost all already in the
 catalog. So there is no endpoint to reverse-engineer, no header set to record, and no `Model`
 objects to author (which also deletes the "a wrong `contextWindow` silently disables compaction"
 risk — that was a consequence of hand-rolling the provider).
@@ -48,9 +49,8 @@ catalog, not a spike.
 - Confirm `@github/copilot-sdk` works from a plain Node script.
 - Sketch a Pi `createProvider()` whose `api` delegates to the SDK. Note this is more work than the OpenAI-compatible path — the whole point of 0.1 is to avoid needing it.
 
-### 0.3 [BLOCKER] Validate Gemini — **[DONE]** built-in `google` provider covers it; credential is `GEMINI_API_KEY`, **not** `GOOGLE_GENERATIVE_AI_API_KEY`
-- First check whether Pi's **built-in `google` provider** already covers the model you want — if so, there is nothing to build and `FLUE_MODEL=google/<model>` with `GOOGLE_GENERATIVE_AI_API_KEY` just works. Only write a custom provider if it doesn't.
-- Record findings in `docs/gemini-endpoint.md`.
+### 0.3 [BLOCKER] Validate Gemini — **[DROPPED]** there is no second provider
+- All model access goes through GitHub Copilot, on the user's instruction and because Copilot's own catalog serves GPT, Gemini and Grok models. The fallback is `github-copilot/gpt-5.4`: a different lab, so not the same outage, with no second credential. `src/env.ts:requireModelCredential()` rejects any specifier outside `github-copilot`, and no `docs/gemini-endpoint.md` was written.
 
 ---
 
@@ -89,7 +89,7 @@ catalog, not a spike.
 - `npx flue run src/agents/smoke.ts --message "hi"`.
 - A model-resolution error naming unknown provider IDs means the import side effect isn't landing — fix before proceeding. This single check is the cheapest possible catch for the biggest footgun in the design.
 
-### 2.3 Env validation in `src/env.ts` — **[DONE, ALTERED]** deliberately **not** a Valibot schema: a Valibot issue carries the offending `input` value, so a failed parse of a credential can surface that credential in an error message or stack trace. Hand-rolled checks throw messages naming variable *names* only, and a test asserts no fragment of a sentinel value appears. Correct variable names are `COPILOT_GITHUB_TOKEN` and `GEMINI_API_KEY` — both were wrong above
+### 2.3 Env validation in `src/env.ts` — **[DONE, ALTERED]** deliberately **not** a Valibot schema: a Valibot issue carries the offending `input` value, so a failed parse of a credential can surface that credential in an error message or stack trace. Hand-rolled checks throw messages naming variable *names* only, and a test asserts no fragment of a sentinel value appears. The one correct variable name is `COPILOT_GITHUB_TOKEN`; the draft above had it wrong, and the `GEMINI_API_KEY` leg no longer exists
 - Valibot schema over `COPILOT_TOKEN`, `GEMINI_API_KEY`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `DISCORD_WEBHOOK_URL`, `FLUE_MODEL`, `GH_TOKEN`.
 - Fail fast with a clear message. Never log values.
 
@@ -178,7 +178,7 @@ seam (`fetchImpl`, `octokit`, `accessToken`) so the whole publish path tests wit
 - Permissions: `contents: read`, `issues: write`. **Never `contents: write`** — see the injection risk in DESIGN.md.
 - `timeout-minutes: 30`.
 - Steps: checkout, setup-node@22, `npm ci`, `npx flue run …`.
-- Two-step primary/fallback pattern from DESIGN.md §4, using `continue-on-error` and `steps.<id>.outcome`, with **asymmetric per-step secrets** — the primary sees only `COPILOT_GITHUB_TOKEN`, the fallback only `GEMINI_API_KEY`. `src/env.ts` demands only the credential the selected provider needs, which is what makes that split work.
+- Two-step primary/fallback pattern from DESIGN.md §4, using `continue-on-error` and `steps.<id>.outcome`. **[ALTERED]** Both legs use the one model credential, `COPILOT_GITHUB_TOKEN`, because both models come from Copilot; the earlier asymmetric-secrets split existed only to serve a second provider that is now gone.
 - Model names as repo **variables** (not secrets) so they're visible and one-click editable.
 - **A final required assertion step, or `continue-on-error` inverts the whole design:** with it set, the job reports success when *both* model steps fail. Parse the `--json` envelope and fail unless `outcome == "completed"` **and** a Doc URL is present. The field is `outcome`, values `"completed"` / `"failed"` / `"aborted"` / `"error"` — asserting `"success"` matches nothing and passes always.
 - Per-issue `concurrency` with `cancel-in-progress: false`; a cancelled run can leave a Doc with no comment.

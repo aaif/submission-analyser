@@ -16,8 +16,7 @@ logs, not readable after saving.
 
 | Secret                        | Used by                             | Notes                                                  |
 | ----------------------------- | ----------------------------------- | ------------------------------------------------------ |
-| `COPILOT_GITHUB_TOKEN`        | primary model leg only              | Copilot-scoped fine-grained PAT                        |
-| `GEMINI_API_KEY`              | fallback model leg only             | AI Studio API key                                      |
+| `COPILOT_GITHUB_TOKEN`        | both model legs                     | Copilot-scoped fine-grained PAT                        |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | publish (Doc creation)              | The whole key file, one line                           |
 | `GOOGLE_DRIVE_FOLDER_ID`      | publish (Doc creation)              | Not sensitive in itself; kept a secret to avoid naming the folder publicly |
 | `DISCORD_WEBHOOK_URL`         | publish (announcement)              | **Is itself a credential** — see below                 |
@@ -28,7 +27,7 @@ one click, which is exactly what you want mid-incident.
 | Variable               | Default if unset                  | What it does                          |
 | ---------------------- | --------------------------------- | ------------------------------------- |
 | `PRIMARY_MODEL`        | `github-copilot/claude-opus-4.7`  | Model for the first attempt           |
-| `FALLBACK_MODEL`       | `google/gemini-2.5-pro`           | Model for the second attempt          |
+| `FALLBACK_MODEL`       | `github-copilot/gpt-5.4`          | Model for the second attempt          |
 | `CANARY_ISSUE_NUMBER`  | `1`                               | The fixed issue the daily canary analyses |
 
 `GITHUB_TOKEN` needs **no setup at all**. GitHub Actions mints one per run and the workflows
@@ -36,9 +35,11 @@ pass it through as `secrets.GITHUB_TOKEN`. Its permissions come from the `permis
 in each workflow — `contents: read` and `issues: write`, never more. You only ever set
 `GITHUB_TOKEN` (or `GH_TOKEN`) by hand for local runs.
 
-The model credentials are handed out **asymmetrically**: the primary step receives
-`COPILOT_GITHUB_TOKEN` and not `GEMINI_API_KEY`; the fallback step receives the reverse. Each
-leg gets exactly the one credential it can use. Keep it that way.
+There is **one model credential**, because all model access goes through GitHub Copilot.
+Copilot's catalog spans four vendors, so the fallback model comes from a different lab than the
+primary without a second API key to provision, rotate, or leak. `src/env.ts` rejects any
+`FLUE_MODEL` outside the `github-copilot` provider, so adding another vendor's key to this repo
+would not silently start working — see [docs/models.md](models.md).
 
 ---
 
@@ -63,18 +64,7 @@ If model calls come back **401 or 404**, do not start rotating tokens: read
 endpoint, and a business or enterprise entitlement needs a different host. That is a
 one-line config override, and it is the more likely explanation.
 
-## 2. Gemini API key (`GEMINI_API_KEY`)
-
-1. https://aistudio.google.com/apikey → **Create API key**.
-2. Attach it to a project with billing configured if you want more than the free tier's rate
-   limits; the fallback only runs when the primary is already down, so free-tier limits are
-   usually survivable, but the canary exercises it daily too.
-3. Save as the `GEMINI_API_KEY` secret.
-
-This is a *different* Google credential from the service account in step 3. The API key talks
-to Gemini; the service account talks to Drive. They are not interchangeable.
-
-## 3. Google service account and Drive folder
+## 2. Google service account and Drive folder
 
 This is the step with the traps. Read all three before clicking anything.
 
@@ -134,7 +124,7 @@ repository: share the folder (or the Shared Drive) with the maintainers' group. 
 should not read the analysis then get a permissions page instead of the analysis, which is
 the correct outcome even though it will occasionally annoy someone.
 
-## 4. Discord webhook (`DISCORD_WEBHOOK_URL`)
+## 3. Discord webhook (`DISCORD_WEBHOOK_URL`)
 
 1. In Discord: **Channel → Edit Channel → Integrations → Webhooks → New Webhook**.
 2. Name it something identifiable (`Issue Analysis`), pick the announcement channel, and
@@ -150,7 +140,7 @@ regenerate the webhook — that invalidates the old URL immediately.
 The agent posts with `allowed_mentions: { parse: [] }`, so an analysis derived from an issue
 body saying "please ping @everyone" cannot ping anyone. Do not remove that.
 
-## 5. Verify, before trusting it with a real issue
+## 4. Verify, before trusting it with a real issue
 
 ```bash
 npm run verify                          # offline: format, types, tests, skill validation
@@ -166,7 +156,6 @@ real model, real issue, publishing nothing. If that is green, run it again unche
 ## Rotation
 
 - **Copilot PAT** — expires by design. The daily canary catches it the next morning.
-- **Gemini key** — rotate on the same cadence as the PAT.
 - **Service-account key** — create the new key, update the secret, then delete the old key
   in the console. Both are valid simultaneously, so there is no gap to plan around.
 - **Discord webhook** — regenerating in the Discord UI invalidates the old URL instantly.
