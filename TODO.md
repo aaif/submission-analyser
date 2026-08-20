@@ -50,7 +50,7 @@ catalog, not a spike.
 - Sketch a Pi `createProvider()` whose `api` delegates to the SDK. Note this is more work than the OpenAI-compatible path — the whole point of 0.1 is to avoid needing it.
 
 ### 0.3 [BLOCKER] Validate Gemini — **[DROPPED]** there is no second provider
-- All model access goes through GitHub Copilot, on the user's instruction. The fallback is `github-copilot/claude-sonnet-4.6`. **[corrected]** It was `github-copilot/gpt-5.4`, on the reasoning that Copilot's catalog also serves GPT, Gemini and Grok models and so gave vendor diversity for free. The canary disproved it: Copilot's OpenAI-shaped endpoints reject a personal access token, so only the 10 `anthropic-messages` models are reachable and the fallback buys a different model, not a different vendor. `src/env.ts:requireModelCredential()` rejects any specifier outside `github-copilot`, and no `docs/gemini-endpoint.md` was written.
+- All model access goes through GitHub Copilot, on the user's instruction and because Copilot's own catalog serves GPT, Gemini and Grok models. The fallback is `github-copilot/gpt-5.4`: a different lab, so not the same outage, with no second credential. Reaching any Copilot model at all needs the token exchange in `src/providers/copilot-auth.ts` — see 6.3 below. `src/env.ts:requireModelCredential()` rejects any specifier outside `github-copilot`, and no `docs/gemini-endpoint.md` was written.
 
 ---
 
@@ -206,6 +206,29 @@ seam (`fetchImpl`, `octokit`, `accessToken`) so the whole publish path tests wit
 - Catches Copilot header/endpoint drift before a real issue does.
 
 ---
+
+### 6.3 Copilot token exchange — **[added, was not in the original plan]**
+
+`src/providers/copilot-auth.ts` + `tests/copilot-auth.test.ts` (12 tests).
+
+Not designed up front because the need was not visible until a real model call was attempted:
+Copilot's inference endpoints reject a GitHub PAT as the bearer, and pi-ai's api-key path sends
+one verbatim. Every model call in this project failed with `Personal Access Tokens are not
+supported for this endpoint` until the exchange landed. Done:
+
+- Exchange at `https://api.github.com/copilot_internal/v2/token`, at agent-module load, with
+  top-level `await` — pi-ai resolves the credential synchronously at the first model call, so
+  there is no later point to await a network round-trip.
+- Exchanged token written back to `COPILOT_GITHUB_TOKEN`, which `envApiKeyAuth` reads lazily.
+- Base URL derived from the token's `proxy-ep`, validated against `*.githubcopilot.com`, and
+  remapped onto the provider **and** every model. This retires the individual/business/
+  enterprise host guess that was carried as the top residual risk.
+- Skipped under `FLUE_FAUX`, so the offline path never reaches the network.
+- No credential in any throw path: status codes and error class names only, asserted by test.
+
+Still unrun: whether the exchange accepts a *fine-grained PAT*. It is documented for pi-ai's
+OAuth tokens; a PAT is a plausible but unverified input. The canary decides it, and
+docs/models.md carries a curl that decides it in one call.
 
 ## Phase 7 — Validation
 

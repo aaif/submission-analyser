@@ -27,7 +27,7 @@ one click, which is exactly what you want mid-incident.
 | Variable               | Default if unset                  | What it does                          |
 | ---------------------- | --------------------------------- | ------------------------------------- |
 | `PRIMARY_MODEL`        | `github-copilot/claude-opus-4.7`  | Model for the first attempt           |
-| `FALLBACK_MODEL`       | `github-copilot/claude-sonnet-4.6` | Model for the second attempt (must be an `anthropic-messages` model — see docs/models.md) |
+| `FALLBACK_MODEL`       | `github-copilot/gpt-5.4`          | Model for the second attempt          |
 | `CANARY_ISSUE_NUMBER`  | `1`                               | The fixed issue the daily canary analyses |
 | `TARGET_REPOSITORY`    | *(the repo the workflow runs in)* | `owner/repo` whose issues get analysed |
 

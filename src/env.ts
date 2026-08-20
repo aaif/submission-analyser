@@ -163,23 +163,19 @@ export function discordWebhookUrl(): string {
 /**
  * All model access goes through GitHub Copilot — one provider, one credential.
  *
- * Both legs are Claude models, which is narrower than it looks like it should be. Copilot's
- * catalog lists 32 models across four vendors, and an earlier version of this file chose
- * `gpt-5.4` as the fallback precisely to get a different vendor out of one credential. That
- * does not work: 22 of those 32 models are served over Copilot's OpenAI-shaped endpoints
- * (`openai-responses`, `openai-completions`), and those endpoints reject a personal access
- * token outright — `400 checking third-party user token: Personal Access Tokens are not
- * supported for this endpoint`. Only the 10 `anthropic-messages` models are reachable with
- * the credential this project uses.
+ * Copilot's catalog carries 32 models from four vendors, so the fallback gets a genuinely
+ * different vendor (an outage at one lab does not take out both legs) without a second API
+ * key, a second billing relationship, and a second provider integration to keep working.
  *
- * So the catalog is not the menu. Under PAT auth the fallback buys a different model, size
- * and capacity pool — worth having, since most model failures are capacity or a bad
- * deploy — but *not* vendor diversity. A vendor-level Anthropic outage takes out both legs,
- * as does a Copilot outage. See docs/models.md.
+ * Reaching any of them at all requires the token exchange in src/providers/copilot-auth.ts:
+ * Copilot's inference endpoints reject a GitHub PAT as the bearer, whatever the model. That
+ * is a credential-type limit, not a per-model one — a brief detour through the belief that
+ * only the `anthropic-messages` models were reachable was wrong, and the Claude leg failing
+ * the same way is what disproved it. See docs/models.md.
  */
 export const MODEL_PROVIDER = 'github-copilot';
 export const DEFAULT_MODEL = `${MODEL_PROVIDER}/claude-opus-4.7`;
-export const FALLBACK_MODEL = `${MODEL_PROVIDER}/claude-sonnet-4.6`;
+export const FALLBACK_MODEL = `${MODEL_PROVIDER}/gpt-5.4`;
 export const FAUX_MODEL = 'faux/faux-1';
 
 /**

@@ -7,7 +7,7 @@ their version numbers:
 
 ```
 github-copilot/claude-opus-4.7
-github-copilot/claude-sonnet-4.6
+github-copilot/gpt-5.4
 ```
 
 Exactly two segments, both non-empty. `modelSpecifier()` enforces that, because the shape is
@@ -37,52 +37,82 @@ repository **variable**, which any maintainer can change in one click with no re
 `FLUE_MODEL=anthropic/...` plus an `ANTHROPIC_API_KEY` secret would quietly work — and start
 sending issue text to a vendor nobody agreed to send it to.
 
-## Only 10 of Copilot's 32 models are reachable with a PAT
+## The token exchange — why a PAT alone does not work
 
-**Read this before choosing a model.** The catalog is not the menu.
+**Read this before debugging a Copilot 400.** A GitHub token is not a Copilot token.
 
-`MODELS['github-copilot']` lists 32 models across four vendors, split by API family:
+Copilot's inference endpoints do not accept a GitHub credential as the bearer. They accept a
+short-lived *Copilot* token, which looks like
 
-| Family | Count | Models |
-| --- | --- | --- |
-| `anthropic-messages` | 10 | `claude-haiku-4.5`, `claude-opus-4.5`/`4.6`/`4.7`/`4.8`/`5`, `claude-sonnet-4`/`4.5`/`4.6`/`5` |
-| `openai-responses` | 14 | `gpt-5.*`, `grok-4.5`, `mai-code-*` |
-| `openai-completions` | 8 | `claude-fable-5`, `gemini-*`, `gpt-4.1`, `kimi-*` |
+```
+tid=...;exp=...;proxy-ep=proxy.individual.githubcopilot.com;...
+```
 
-The 22 OpenAI-shaped models **cannot be used with a personal access token**. Copilot's
-OpenAI-shaped endpoints reject one outright:
+and which you get by presenting a GitHub token to
+`https://api.github.com/copilot_internal/v2/token` with the Copilot editor headers. Send a
+PAT to the inference endpoint directly and every model, on every API family, replies:
 
 ```
 400 checking third-party user token: bad request:
 Personal Access Tokens are not supported for this endpoint
 ```
 
-That is not a permission we forgot to tick — the `Copilot Requests` permission has one level,
-read-only, and it is already granted. The endpoint refuses the *credential type*. The
-`anthropic-messages` endpoint does accept it. So under the credential this project uses, the
-Claude models are the whole selection.
+pi-ai has two Copilot credential paths and **only one of them does the exchange**. Its OAuth
+path runs a device flow, exchanges, and refreshes. Its api-key path — `envApiKeyAuth` reading
+`COPILOT_GITHUB_TOKEN`, which is the path a headless CI job gets — sends the value *verbatim*.
+So the credential arrives one step short of usable, and the failure looks like a bad token.
 
-This was discovered the hard way: the fallback leg was `github-copilot/gpt-5.4`, chosen
-specifically so that one credential would still buy a different vendor. It never worked, and
-the canary is what said so — which is the argument for the canary matrix covering *both* legs.
+`src/providers/copilot-auth.ts` does the missing step at agent-module load, in about 40 lines,
+and writes the exchanged token back to `COPILOT_GITHUB_TOKEN` (which `envApiKeyAuth` reads
+lazily at the first model call). We did not adopt pi-ai's OAuth path instead because it needs
+an interactive browser login to seed and a writable credential store to refresh, and a
+one-shot Actions run has neither.
+
+### Two things this fixed for free
+
+- **The host.** The exchanged token carries `proxy-ep=`, which names the account's own proxy,
+  so individual / business / enterprise is now read from the response instead of guessed
+  between three hardcoded hostnames. That was previously documented as this project's largest
+  residual risk; it is now handled, and the proxy host is validated against
+  `*.githubcopilot.com` before it becomes a base URL.
+- **Where it fails.** A rejected credential now fails at the exchange, naming the variable and
+  the HTTP status, rather than as an opaque 400 from an inference endpoint mid-run.
+
+### A wrong turn worth recording
+
+The first diagnosis was that Copilot's *OpenAI-shaped* endpoints reject PATs and its
+`anthropic-messages` endpoint accepts them — so only the 10 Claude models were usable, and the
+fallback was moved off `gpt-5.4` on those grounds. That was wrong. The evidence looked good
+(the failing leg's error carried pi-ai's `OpenAI API error` prefix, which only the
+`openai-responses` module emits) but the inference did not follow: the Claude leg then failed
+with the identical rejection and no prefix. It is the credential type, not the endpoint.
+
+The lesson is narrow and reusable: two legs failing the same way is evidence about what they
+share, and both legs shared the credential.
 
 ## The two configured models
+
+Copilot's catalog carries 32 models from four vendors, so the fallback gets real vendor
+diversity — by model, not by provider.
 
 - **Primary — `github-copilot/claude-opus-4.7`.** 1M-token context window, $5/M input and
   $25/M output at the catalog's listed rates. This is also `DEFAULT_MODEL` in `src/env.ts`,
   so an unset `FLUE_MODEL` lands here.
-- **Fallback — `github-copilot/claude-sonnet-4.6`.** A smaller, cheaper model on a different
-  serving pool.
+- **Fallback — `github-copilot/gpt-5.4`.** A different lab (1M context, $2.5/M in, $15/M
+  out), so a Claude-side outage or a bad Claude deploy does not take out both legs.
 
-**The fallback does not buy vendor diversity, and earlier drafts of this file claimed it
-did.** Both legs are Anthropic models behind one provider, so a vendor-level Anthropic outage
-takes out both, and so does a Copilot outage or a rejected token. What it does cover is the
-more common case: a capacity blip, a rate limit, or a bad deploy on one specific model.
+What this fallback does *not* cover is Copilot itself: if the Copilot endpoint is down, or the
+token is rejected, or the exchange above fails, both legs fail together. That is the accepted
+cost of one credential, and it is exactly what the canary is for.
 
-If real vendor diversity is ever a requirement, PAT auth cannot deliver it and the options
-are all bigger than a config change — pi-ai's OAuth device flow (which also fixes the
-business/enterprise endpoint problem, but needs an interactive login to seed CI), the GitHub
-Models API, or dropping the single-provider rule and taking on a second credential.
+For reference, the catalog splits by API family as follows — it does not affect model choice,
+but it explains the differing error prefixes when one does fail:
+
+| Family | Count | Models |
+| --- | --- | --- |
+| `anthropic-messages` | 10 | `claude-haiku-4.5`, `claude-opus-4.5`/`4.6`/`4.7`/`4.8`/`5`, `claude-sonnet-4`/`4.5`/`4.6`/`5` |
+| `openai-responses` | 14 | `gpt-5.*`, `grok-4.5`, `mai-code-*` |
+| `openai-completions` | 8 | `claude-fable-5`, `gemini-*`, `gpt-4.1`, `kimi-*` |
 
 The workflows read these from the repo **variables** `PRIMARY_MODEL` and `FALLBACK_MODEL`,
 falling back to the values above when unset. Variables, not secrets: a model id is not
@@ -104,7 +134,7 @@ is a single submission, so there is no mid-run swap available. See DESIGN.md §4
 So to try another model for one run:
 
 ```bash
-FLUE_MODEL=github-copilot/claude-opus-5 npm run agent -- --id 123 --message 'Analyse issue #123'
+FLUE_MODEL=github-copilot/gpt-5.4 npm run agent -- --id 123 --message 'Analyse issue #123'
 ```
 
 `modelSpecifier()` rejects a specifier that is not exactly `provider/model`, and
@@ -112,69 +142,58 @@ FLUE_MODEL=github-copilot/claude-opus-5 npm run agent -- --id 123 --message 'Ana
 `github-copilot` or if `COPILOT_GITHUB_TOKEN` is missing — a typo in a specifier fails in
 seconds, not after an analysis.
 
-Pick from the 10 `anthropic-messages` models above. An OpenAI-shaped one will pass both checks
-and then be rejected by Copilot at the first model call.
+## When Copilot returns 401 or 404
 
-## When Copilot returns 401 or 404 — read this first
+**Most of this section used to be the project's largest residual risk. The token exchange
+retired it.** The host is no longer guessed: `src/providers/copilot-auth.ts` reads `proxy-ep`
+off the exchanged token and remaps the provider *and* every model to it, so an individual,
+business or enterprise entitlement is handled by reading the response.
 
-**This is the largest residual risk in the project, and it is a one-line fix.**
-
-The built-in `github-copilot` provider points at the **individual** endpoint,
+Kept because the reasoning still applies if the exchange itself is ever bypassed: the built-in
+`github-copilot` provider hardcodes the **individual** endpoint,
 `https://api.individual.githubcopilot.com` — verified in
-`node_modules/@earendil-works/pi-ai/dist/providers/github-copilot.js`, and on all 32 model
-entries individually. Note that this applies to the **api-key path**, which is the one this
-project uses: pi-ai's `envApiKeyAuth` sends `COPILOT_GITHUB_TOKEN` verbatim as the bearer to
-that fixed host. Its *OAuth* path derives the host from the `proxy-ep` field of an exchanged
-Copilot token instead, so it adapts automatically — but that path needs an interactive device
-flow and a refreshable credential, which a one-shot CI job does not have. We get the fixed
-host, and therefore this failure mode.
+`node_modules/@earendil-works/pi-ai/dist/providers/github-copilot.js` and on all 32 model
+entries individually. Business and enterprise seats are served from
+`api.business.githubcopilot.com` and `api.enterprise.githubcopilot.com`, and a genuinely valid
+token against the wrong host fails as a 401 or 404 — which reads exactly like a bad
+credential. Note that each pi-ai `Model` object carries **its own** `baseUrl`, so overriding
+only the provider's is not enough; that is why `applyCopilotAuth()` maps `getModels()` too.
 
-A business or enterprise Copilot entitlement is served from a different host:
+So the order to check now is:
 
-- `https://api.business.githubcopilot.com`
-- `https://api.enterprise.githubcopilot.com`
+1. **Did the exchange succeed?** A failure there names `COPILOT_GITHUB_TOKEN` and the HTTP
+   status. 401 or 403 means the token lacks the `Copilot Requests` permission, or the account
+   that owns it has no active Copilot seat.
+2. **Is the credential a fine-grained PAT owned by a personal account?** Classic tokens are not
+   accepted, and the permission does not exist on org-owned tokens. See docs/secrets.md §1.
+3. **Headers.** Every model entry carries `Copilot-Integration-Id: vscode-chat`,
+   `Editor-Version`, `Editor-Plugin-Version` and a `User-Agent` naming a VS Code Copilot Chat
+   build (32 of 32 entries). That is pi-ai presenting itself as the editor plugin, and those
+   values have had to move before as GitHub tightened the endpoint. `copilot-auth.ts` copies
+   the same four headers, because the exchange also rejects a request without them. If a call
+   401s, upgrade `@earendil-works/pi-ai` before editing headers by hand — someone has probably
+   already tracked the change.
 
-A token that is genuinely valid, on an account that genuinely has a seat, will still fail
-against the wrong host — and it fails as a 401 or a 404, which reads exactly like a bad
-credential. Do not start rotating PATs. Try the host first.
-
-The override reuses the built-in catalog, so no model metadata gets hand-maintained. Note
-that in pi-ai each `Model` object carries **its own** `baseUrl`, so overriding only the
-provider's `baseUrl` is not enough — the models have to be remapped too:
-
-```ts
-// src/providers/copilot-host.ts — imported for its side effect by the agent module.
-// `flue run` loads ONLY the agent module, never app.ts, so a setProvider() call anywhere
-// else silently does not register.
-import { setProvider } from '@flue/runtime';
-import { githubCopilotProvider } from '@earendil-works/pi-ai/providers/github-copilot';
-
-const host = process.env.COPILOT_BASE_URL ?? 'https://api.business.githubcopilot.com';
-const base = githubCopilotProvider();
-
-setProvider({
-  ...base,
-  baseUrl: host,
-  getModels: () => base.getModels().map((model) => ({ ...model, baseUrl: host })),
-});
-```
-
-Registration performs no I/O, so a wrong host still surfaces only on the first model request.
-The cheap way to test a candidate host is the **Model canary** workflow: it is a dry run, it
+The cheap way to test any of this is the **Model canary** workflow: it is a dry run, it
 publishes nothing, and it can be dispatched by hand as often as you like.
 
-The other place Copilot drift shows up is **headers**. Every model entry in the catalog
-carries its own `headers` — `Copilot-Integration-Id: vscode-chat`, `Editor-Version`,
-`Editor-Plugin-Version` and a `User-Agent` naming a VS Code Copilot Chat build (verified: 32
-of 32 model entries). That is pi-ai presenting itself as the editor plugin, and those values
-have had to move before as GitHub tightened the endpoint. If the host override does not fix
-a 401, upgrade `@earendil-works/pi-ai` before editing headers by hand — someone has probably
-already tracked the change.
+To check a token by hand without a workflow run — this is the exact call
+`applyCopilotAuth()` makes, and a 200 with a `token` field means model access will work:
 
-Worth knowing which way the wind is blowing here: GitHub now documents `COPILOT_GITHUB_TOKEN`
-as the environment variable for authenticating Copilot CLI with a fine-grained PAT, so a PAT
-against this endpoint is a supported pattern rather than a pure reverse-engineering bet. The
-editor-impersonating headers are still pi-ai's own choice, not a documented contract.
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $COPILOT_GITHUB_TOKEN" \
+  -H 'Copilot-Integration-Id: vscode-chat' \
+  -H 'Editor-Version: vscode/1.107.0' \
+  -H 'Editor-Plugin-Version: copilot-chat/0.35.0' \
+  -H 'User-Agent: GitHubCopilotChat/0.35.0' \
+  https://api.github.com/copilot_internal/v2/token
+```
+
+`/copilot_internal/` is, as the path says, internal and undocumented — GitHub does not promise
+it to third parties. It is the same call pi-ai's OAuth path makes, so we are not further out on
+a limb than the library, but a Copilot upgrade is the thing most likely to break this project.
+The canary is what tells you.
 
 ## Cost
 

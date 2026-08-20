@@ -5,7 +5,8 @@ import { local } from '@flue/runtime/node';
 import skill from '../skills/issue-analysis/SKILL.md';
 import { analyzeAndPublish } from '../tools/analyze-and-publish.ts';
 import { setupFauxRun } from '../faux.ts';
-import { modelSpecifier } from '../env.ts';
+import { isFaux, modelSpecifier } from '../env.ts';
+import { applyCopilotAuth } from '../providers/copilot-auth.ts';
 
 /**
  * The issue-analysis agent. Run once per filed issue by
@@ -16,6 +17,24 @@ import { modelSpecifier } from '../env.ts';
  * CLI run has to live here. It is a no-op without the flag.
  */
 setupFauxRun();
+
+/**
+ * Module-scope side effect: exchange the GitHub credential for a Copilot token, and point the
+ * provider at the host the exchange names.
+ *
+ * Top-level await, which is load-bearing. Copilot's inference endpoints reject a PAT
+ * outright, and pi-ai's api-key path does not do the exchange, so without this the first
+ * model call fails with `Personal Access Tokens are not supported for this endpoint`. The
+ * exchange is a network round-trip and pi-ai resolves the credential synchronously at that
+ * first call, so there is no later point at which it could be awaited. See
+ * src/providers/copilot-auth.ts.
+ *
+ * Skipped under FLUE_FAUX so the offline path stays offline: the faux provider needs no
+ * credential, and a test run must never depend on reaching github.com.
+ */
+if (!isFaux()) {
+  await applyCopilotAuth();
+}
 
 /**
  * Bounded continuation guard.
