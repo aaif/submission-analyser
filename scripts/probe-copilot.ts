@@ -122,6 +122,63 @@ async function probeModels(host: string, token: string, integrationId?: string):
   }
 }
 
+/**
+ * The one thing the `/models` matrix cannot tell us.
+ *
+ * Reading the CLI's own bundle settled two facts: it has **no** token-exchange route at all
+ * (`copilot_internal/v2/token` does not appear in it), and it sends the GitHub token straight
+ * to `api.githubcopilot.com`. Since the CLI demonstrably works in Actions with the workflow's
+ * token, and our identical direct send to `/models` is refused, the difference has to be the
+ * *endpoint* — which is exactly what the refusal says: "not supported for **this endpoint**".
+ *
+ * So this probes inference itself. Unlike everything else here it is a POST and it does invoke
+ * a model, so `max_tokens: 1` keeps it to the smallest billable unit available.
+ */
+async function probeInference(
+  host: string,
+  token: string,
+  route: '/chat/completions' | '/v1/messages',
+  model: string,
+): Promise<Probe> {
+  const label = `POST ${host}${route}  [${model}]`;
+  const body =
+    route === '/chat/completions'
+      ? { model, max_tokens: 1, messages: [{ role: 'user', content: 'ok' }] }
+      : { model, max_tokens: 1, messages: [{ role: 'user', content: 'ok' }] };
+
+  try {
+    const response = await fetch(`${host}${route}`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        // The CLI's own header set, as far as its bundle reveals it.
+        'Copilot-Integration-Id': 'copilot-cli',
+        'X-Initiator': 'agent',
+        'X-GitHub-Api-Version': '2025-05-01',
+        'User-Agent': 'GitHubCopilotChat/0.35.0',
+        'Editor-Version': 'vscode/1.107.0',
+        'Editor-Plugin-Version': 'copilot-chat/0.35.0',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+    const text = await response.text();
+    return {
+      label,
+      status: response.status,
+      note: response.ok ? 'WORKS — a model answered' : summarise(text, token),
+    };
+  } catch (error) {
+    return {
+      label,
+      status: 'network',
+      note: error instanceof Error ? error.name : 'unknown error',
+    };
+  }
+}
+
 async function probeExchange(token: string, url: string = EXCHANGE_URL): Promise<Probe> {
   const label = url;
   try {
@@ -190,6 +247,15 @@ async function main(): Promise<void> {
       `\n${exchangeWinners.length} exchange route(s) answered 200. That is the route to call.\n`,
     );
   }
+
+  // Both API families, because Copilot serves the Claude models over the Anthropic-shaped
+  // route and everything else over the OpenAI-shaped one, and "this endpoint" may well mean
+  // one and not the other.
+  console.log(`\nInference (a real model call, max_tokens: 1 — the only POSTs in this script):\n`);
+  print([
+    await probeInference('https://api.githubcopilot.com', token, '/chat/completions', 'gpt-5.4'),
+    await probeInference('https://api.githubcopilot.com', token, '/v1/messages', 'claude-sonnet-5'),
+  ]);
 
   const winners = probes.filter((probe) => probe.status === 200);
   console.log(

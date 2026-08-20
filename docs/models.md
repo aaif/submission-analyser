@@ -99,7 +99,24 @@ Nothing is stored as a secret; the workflows pass `secrets.GITHUB_TOKEN` as
 it authorises inference requests — so it does not weaken the read-only posture the threat
 model rests on.
 
-**[measured] Neither credential CI can obtain reaches the Copilot API.** The Actions token is
+**[measured] The CLI works here, and reading its bundle explains why.** Installing
+`@github/copilot` and grepping the native runtime (`prebuilds/*/runtime.node`) settled two
+facts that no amount of documentation would have:
+
+- **There is no token exchange.** `copilot_internal/v2/token` does not appear anywhere in the
+  CLI. It sends the GitHub token straight to `api.githubcopilot.com` — which is what
+  `copilot-auth.ts` now does. The exchange route was never the CLI's path, so its 404 was never
+  a symptom of anything.
+- **The refusal is endpoint-specific, exactly as worded.** The CLI uses `/chat/completions`,
+  `/responses`, `/v1/messages` and `/models`; our probe only ever tested `GET /models`. `not
+  supported for **this endpoint**` is the literal answer to a question we only asked of one
+  endpoint.
+
+The CLI also runs with `Copilot-Integration-Id: copilot-cli`, which the matrix already tried,
+so headers are unlikely to be the differentiator. `probe:copilot` now ends with two real
+inference POSTs (`max_tokens: 1`) to settle it.
+
+**[superseded] Neither credential reached `GET /models`.** The Actions token is
 refused at all four hosts with `GitHub App Server-To-Server Tokens are not supported for this
 endpoint`, and the exchange 404s for it. Same shape as the PAT result, different noun. Those
 hosts accept only an exchanged `tid=` token, and we have found no route that will mint one from

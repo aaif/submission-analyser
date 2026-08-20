@@ -130,12 +130,12 @@ jobs:
 
           echo '=== Full URLs, with paths (this is the datum: which route mints the token) ==='
           grep -rhoE 'https?://[A-Za-z0-9._-]+(/[A-Za-z0-9._~%!$&()*+,;=:@/-]*)?' "${dirs[@]}" 2>/dev/null \
-            | sort -u | redact
+            | sort -u | redact || true
 
           echo
           echo '=== Header names seen (values shown only for the non-credential ones) ==='
           grep -rhoiE '(copilot-integration-id|editor-version|editor-plugin-version|x-initiator|x-github-api-version|openai-intent|user-agent)[": ]+[A-Za-z0-9./_-]+' "${dirs[@]}" 2>/dev/null \
-            | sort -u | redact
+            | sort -u | redact || true
 
           echo
           echo '=== Config keys (names only, no values) ==='
