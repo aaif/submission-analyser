@@ -163,19 +163,54 @@ export function discordWebhookUrl(): string {
 /**
  * All model access goes through GitHub Copilot — one provider, one credential.
  *
- * Copilot's catalog carries 32 models from four vendors, so the fallback still gets a
- * genuinely different vendor (an outage at one lab does not take out both legs) without a
- * second API key, a second billing relationship, and a second provider integration to keep
- * working. See docs/models.md.
+ * Both legs are Claude models, which is narrower than it looks like it should be. Copilot's
+ * catalog lists 32 models across four vendors, and an earlier version of this file chose
+ * `gpt-5.4` as the fallback precisely to get a different vendor out of one credential. That
+ * does not work: 22 of those 32 models are served over Copilot's OpenAI-shaped endpoints
+ * (`openai-responses`, `openai-completions`), and those endpoints reject a personal access
+ * token outright — `400 checking third-party user token: Personal Access Tokens are not
+ * supported for this endpoint`. Only the 10 `anthropic-messages` models are reachable with
+ * the credential this project uses.
+ *
+ * So the catalog is not the menu. Under PAT auth the fallback buys a different model, size
+ * and capacity pool — worth having, since most model failures are capacity or a bad
+ * deploy — but *not* vendor diversity. A vendor-level Anthropic outage takes out both legs,
+ * as does a Copilot outage. See docs/models.md.
  */
 export const MODEL_PROVIDER = 'github-copilot';
 export const DEFAULT_MODEL = `${MODEL_PROVIDER}/claude-opus-4.7`;
-export const FALLBACK_MODEL = `${MODEL_PROVIDER}/gpt-5.4`;
+export const FALLBACK_MODEL = `${MODEL_PROVIDER}/claude-sonnet-4.6`;
 export const FAUX_MODEL = 'faux/faux-1';
+
+/**
+ * Rejects a specifier that is not exactly `provider/model`.
+ *
+ * This exists because of a real failure: `PRIMARY_MODEL` was set to
+ * `github-copilot//claude-opus-5` — one extra slash — and the provider check below passed,
+ * because splitting on `/` and taking element 0 still yields `github-copilot`. The run then
+ * died inside the runtime with `Unknown model ID "/claude-opus-5"`, which names the symptom
+ * and not the cause. A model specifier comes from a repository variable typed by hand, so
+ * "someone typed it slightly wrong" is the expected input, not the exceptional one.
+ */
+function parseModelSpecifier(specifier: string): { providerId: string; modelId: string } {
+  const parts = specifier.split('/');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    // Safe to echo: a model specifier is public configuration, not a credential.
+    throw new EnvError(
+      `Model specifier "${specifier}" must be exactly "provider/model". See docs/models.md.`,
+    );
+  }
+  return { providerId: parts[0], modelId: parts[1] };
+}
 
 export function modelSpecifier(): string {
   if (isFaux()) return FAUX_MODEL;
-  return read('FLUE_MODEL') ?? DEFAULT_MODEL;
+  const specifier = read('FLUE_MODEL') ?? DEFAULT_MODEL;
+  // Validated here rather than only in preflight() because the runtime resolves the model
+  // when the submission starts, which is before any tool runs — so preflight is too late to
+  // be the thing that catches a malformed specifier.
+  parseModelSpecifier(specifier);
+  return specifier;
 }
 
 /** The one credential, as declared by the pi-ai built-in provider `flue run` registers. */
@@ -194,7 +229,7 @@ export const MODEL_CREDENTIAL = 'COPILOT_GITHUB_TOKEN';
  * credential, so it is safe to echo.
  */
 export function requireModelCredential(specifier: string): void {
-  const providerId = specifier.split('/')[0] ?? '';
+  const { providerId } = parseModelSpecifier(specifier);
   if (providerId === 'faux') return;
   if (providerId !== MODEL_PROVIDER) {
     throw new EnvError(

@@ -7,8 +7,14 @@ their version numbers:
 
 ```
 github-copilot/claude-opus-4.7
-github-copilot/gpt-5.4
+github-copilot/claude-sonnet-4.6
 ```
+
+Exactly two segments, both non-empty. `modelSpecifier()` enforces that, because the shape is
+easy to get subtly wrong: `github-copilot//claude-opus-5` — one stray slash — once passed the
+provider check (splitting on `/` and taking element 0 still gives `github-copilot`) and died
+deep in the runtime with `Unknown model ID "/claude-opus-5"`, which names the symptom instead
+of the typo. It now fails immediately, quoting the specifier back.
 
 ## One provider: GitHub Copilot
 
@@ -31,22 +37,52 @@ repository **variable**, which any maintainer can change in one click with no re
 `FLUE_MODEL=anthropic/...` plus an `ANTHROPIC_API_KEY` secret would quietly work — and start
 sending issue text to a vendor nobody agreed to send it to.
 
-## The two configured models
+## Only 10 of Copilot's 32 models are reachable with a PAT
 
-Copilot's catalog carries 32 models from four vendors, so the fallback still gets real vendor
-diversity — by model, not by provider.
+**Read this before choosing a model.** The catalog is not the menu.
+
+`MODELS['github-copilot']` lists 32 models across four vendors, split by API family:
+
+| Family | Count | Models |
+| --- | --- | --- |
+| `anthropic-messages` | 10 | `claude-haiku-4.5`, `claude-opus-4.5`/`4.6`/`4.7`/`4.8`/`5`, `claude-sonnet-4`/`4.5`/`4.6`/`5` |
+| `openai-responses` | 14 | `gpt-5.*`, `grok-4.5`, `mai-code-*` |
+| `openai-completions` | 8 | `claude-fable-5`, `gemini-*`, `gpt-4.1`, `kimi-*` |
+
+The 22 OpenAI-shaped models **cannot be used with a personal access token**. Copilot's
+OpenAI-shaped endpoints reject one outright:
+
+```
+400 checking third-party user token: bad request:
+Personal Access Tokens are not supported for this endpoint
+```
+
+That is not a permission we forgot to tick — the `Copilot Requests` permission has one level,
+read-only, and it is already granted. The endpoint refuses the *credential type*. The
+`anthropic-messages` endpoint does accept it. So under the credential this project uses, the
+Claude models are the whole selection.
+
+This was discovered the hard way: the fallback leg was `github-copilot/gpt-5.4`, chosen
+specifically so that one credential would still buy a different vendor. It never worked, and
+the canary is what said so — which is the argument for the canary matrix covering *both* legs.
+
+## The two configured models
 
 - **Primary — `github-copilot/claude-opus-4.7`.** 1M-token context window, $5/M input and
   $25/M output at the catalog's listed rates. This is also `DEFAULT_MODEL` in `src/env.ts`,
   so an unset `FLUE_MODEL` lands here.
-- **Fallback — `github-copilot/gpt-5.4`.** A different lab (1M context, $2.5/M in, $15/M
-  out), so a Claude-side outage or a bad Claude deploy does not take out both legs.
+- **Fallback — `github-copilot/claude-sonnet-4.6`.** A smaller, cheaper model on a different
+  serving pool.
 
-What this fallback does *not* cover is Copilot itself: if the Copilot endpoint is down or the
-token is rejected, both legs fail together. That is the accepted cost of one credential. The
-failure is loud — the assert step turns it into a red run and a comment on the issue — and the
-remedy is to run the analysis by hand, not to keep a second vendor account warm all year for
-an outage that has not happened.
+**The fallback does not buy vendor diversity, and earlier drafts of this file claimed it
+did.** Both legs are Anthropic models behind one provider, so a vendor-level Anthropic outage
+takes out both, and so does a Copilot outage or a rejected token. What it does cover is the
+more common case: a capacity blip, a rate limit, or a bad deploy on one specific model.
+
+If real vendor diversity is ever a requirement, PAT auth cannot deliver it and the options
+are all bigger than a config change — pi-ai's OAuth device flow (which also fixes the
+business/enterprise endpoint problem, but needs an interactive login to seed CI), the GitHub
+Models API, or dropping the single-provider rule and taking on a second credential.
 
 The workflows read these from the repo **variables** `PRIMARY_MODEL` and `FALLBACK_MODEL`,
 falling back to the values above when unset. Variables, not secrets: a model id is not
@@ -68,12 +104,16 @@ is a single submission, so there is no mid-run swap available. See DESIGN.md §4
 So to try another model for one run:
 
 ```bash
-FLUE_MODEL=github-copilot/gpt-5.4 npm run agent -- --id 123 --message 'Analyse issue #123'
+FLUE_MODEL=github-copilot/claude-opus-5 npm run agent -- --id 123 --message 'Analyse issue #123'
 ```
 
+`modelSpecifier()` rejects a specifier that is not exactly `provider/model`, and
 `requireModelCredential()` throws before the run spends a single token if the provider is not
 `github-copilot` or if `COPILOT_GITHUB_TOKEN` is missing — a typo in a specifier fails in
 seconds, not after an analysis.
+
+Pick from the 10 `anthropic-messages` models above. An OpenAI-shaped one will pass both checks
+and then be rejected by Copilot at the first model call.
 
 ## When Copilot returns 401 or 404 — read this first
 

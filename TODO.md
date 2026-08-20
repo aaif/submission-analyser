@@ -50,7 +50,7 @@ catalog, not a spike.
 - Sketch a Pi `createProvider()` whose `api` delegates to the SDK. Note this is more work than the OpenAI-compatible path — the whole point of 0.1 is to avoid needing it.
 
 ### 0.3 [BLOCKER] Validate Gemini — **[DROPPED]** there is no second provider
-- All model access goes through GitHub Copilot, on the user's instruction and because Copilot's own catalog serves GPT, Gemini and Grok models. The fallback is `github-copilot/gpt-5.4`: a different lab, so not the same outage, with no second credential. `src/env.ts:requireModelCredential()` rejects any specifier outside `github-copilot`, and no `docs/gemini-endpoint.md` was written.
+- All model access goes through GitHub Copilot, on the user's instruction. The fallback is `github-copilot/claude-sonnet-4.6`. **[corrected]** It was `github-copilot/gpt-5.4`, on the reasoning that Copilot's catalog also serves GPT, Gemini and Grok models and so gave vendor diversity for free. The canary disproved it: Copilot's OpenAI-shaped endpoints reject a personal access token, so only the 10 `anthropic-messages` models are reachable and the fallback buys a different model, not a different vendor. `src/env.ts:requireModelCredential()` rejects any specifier outside `github-copilot`, and no `docs/gemini-endpoint.md` was written.
 
 ---
 

@@ -304,6 +304,47 @@ describe('env', () => {
       process.env['FLUE_FAUX'] = '1';
       expect(modelSpecifier()).toBe(FAUX_MODEL);
     });
+
+    // The regression that motivated the shape check: PRIMARY_MODEL was set to
+    // `github-copilot//claude-opus-5`. Splitting on '/' and taking element 0 still yields
+    // `github-copilot`, so the provider guard passed and the run died inside the runtime
+    // with `Unknown model ID "/claude-opus-5"` — the symptom, not the typo.
+    it('rejects a specifier that is not exactly provider/model', () => {
+      for (const specifier of [
+        'github-copilot//claude-opus-5',
+        'github-copilot/',
+        '/claude-opus-5',
+        'claude-opus-5',
+        'github-copilot/claude/opus',
+      ]) {
+        process.env['FLUE_MODEL'] = specifier;
+        const error = thrown(() => modelSpecifier());
+        expect(error).toBeInstanceOf(EnvError);
+        expect(String(error)).toContain('provider/model');
+      }
+    });
+
+    // An empty or whitespace-only FLUE_MODEL is "unset", not "malformed" — a workflow that
+    // interpolates an undefined repo variable produces exactly this, and the default is the
+    // right answer there.
+    it('treats an empty FLUE_MODEL as unset', () => {
+      process.env['FLUE_MODEL'] = '   ';
+      expect(modelSpecifier()).toBe(DEFAULT_MODEL);
+    });
+
+    // A model specifier is public configuration, so quoting it back is the whole point:
+    // the previous failure mode was a message that did not contain the value at fault.
+    it('quotes the bad specifier back, since it is configuration and not a credential', () => {
+      process.env['FLUE_MODEL'] = 'github-copilot//claude-opus-5';
+      expect(String(thrown(() => modelSpecifier()))).toContain('github-copilot//claude-opus-5');
+    });
+
+    it('rejects the malformed specifier at the credential guard too', () => {
+      process.env['COPILOT_GITHUB_TOKEN'] = SENTINEL;
+      expect(thrown(() => requireModelCredential('github-copilot//claude-opus-5'))).toBeInstanceOf(
+        EnvError,
+      );
+    });
   });
 
   describe('requireModelCredential', () => {

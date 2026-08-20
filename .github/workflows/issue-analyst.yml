@@ -138,7 +138,7 @@ jobs:
         id: fallback
         if: steps.primary.outcome == 'failure'
         env:
-          FLUE_MODEL: ${{ vars.FALLBACK_MODEL || 'github-copilot/gpt-5.4' }}
+          FLUE_MODEL: ${{ vars.FALLBACK_MODEL || 'github-copilot/claude-sonnet-4.6' }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}

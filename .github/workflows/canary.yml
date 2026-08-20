@@ -47,7 +47,7 @@ jobs:
           - leg: primary
             model: ${{ vars.PRIMARY_MODEL || 'github-copilot/claude-opus-4.7' }}
           - leg: fallback
-            model: ${{ vars.FALLBACK_MODEL || 'github-copilot/gpt-5.4' }}
+            model: ${{ vars.FALLBACK_MODEL || 'github-copilot/claude-sonnet-4.6' }}
 
     name: canary (${{ matrix.leg }})
 

@@ -215,13 +215,20 @@ wrong, and each would have failed at model resolution:
 | Provider id | `github-copilot` | `copilot` |
 | Model specifier | `github-copilot/claude-opus-4.7` (dots) | `copilot/claude-opus-4-7` |
 | Copilot credential | `COPILOT_GITHUB_TOKEN` | `COPILOT_TOKEN` |
-| Fallback model | `github-copilot/gpt-5.4` | `google/gemini-2.5-pro` + `GOOGLE_GENERATIVE_AI_API_KEY` |
+| Fallback model | `github-copilot/claude-sonnet-4.6` | `google/gemini-2.5-pro` + `GOOGLE_GENERATIVE_AI_API_KEY` |
 
 **[corrected] One provider, not two.** Earlier drafts, and my own first implementation, ran the
-fallback leg on `google/gemini-2.5-pro` with a second credential. That was wasted surface: Copilot's
-own catalog spans four vendors, so `github-copilot/gpt-5.4` delivers the same "different lab, so not
-the same outage" property with one API key, one billing relationship, and one provider integration to
-keep working. `src/env.ts` now *enforces* the single provider — `requireModelCredential()` throws on
+fallback leg on `google/gemini-2.5-pro` with a second credential. Dropping it to a single provider
+was right, but the *reason* given was wrong, and the canary caught it: I claimed Copilot's
+four-vendor catalog meant `github-copilot/gpt-5.4` still delivered "a different lab, so not the same
+outage" for free. It does not. 22 of the 32 catalog models are served over Copilot's OpenAI-shaped
+endpoints, and those endpoints reject a personal access token outright, so only the 10
+`anthropic-messages` models are reachable at all. The fallback is now
+`github-copilot/claude-sonnet-4.6` and it buys a different model and capacity pool, **not** vendor
+diversity. See docs/models.md.
+
+The single-provider decision stands on its own merits — one API key, one billing relationship, one
+provider integration to keep working. `src/env.ts` now *enforces* the single provider — `requireModelCredential()` throws on
 any specifier outside `github-copilot`. That check has to be in code, not just here: `FLUE_MODEL`
 comes from a repo variable editable in one click, and `flue run` registers every built-in provider,
 so an unguarded specifier plus a stray API-key secret would quietly route issue bodies to a vendor
@@ -259,15 +266,17 @@ So fallback moves up a level, to the workflow:
 - name: Run agent (fallback)
   if: steps.primary.outcome == 'failure'
   env:
-    FLUE_MODEL: ${{ vars.FALLBACK_MODEL }}   # github-copilot/gpt-5.4
+    FLUE_MODEL: ${{ vars.FALLBACK_MODEL }}   # github-copilot/claude-sonnet-4.6
     COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
   run: npx flue run src/agents/issue-analyst.ts --message "Analyze issue #$ISSUE_NUMBER" --json | tee result.json
 ```
 
 Both legs share the one model credential, because both models are served by Copilot. The diversity
-is at the *model* level: a Claude-side outage or a bad Claude deploy does not take out both attempts.
-`src/env.ts` rejects any specifier outside the `github-copilot` provider, so the variable that
-selects the model cannot be used to introduce a new one.
+is at the *model* level only — a capacity blip or a bad deploy on one model does not take out both
+attempts, but a vendor-level or Copilot-level outage does. `src/env.ts` rejects any specifier outside
+the `github-copilot` provider, and requires the exact `provider/model` shape, so the variable that
+selects the model can neither introduce a new provider nor smuggle in a typo that only surfaces deep
+in the runtime.
 
 **`continue-on-error` needs a matching assertion or it silently inverts the design.** With it set,
 the job reports success when *both* model steps fail. So a final, non-`continue-on-error` step parses
