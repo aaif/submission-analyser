@@ -51,6 +51,12 @@ const EXCHANGE_URLS = [
   'https://api.github.com/copilot_internal/user',
   'https://api.githubcopilot.com/copilot_internal/v2/token',
   'https://copilot-proxy.githubusercontent.com/v1/models',
+  // The CLI contacts github.com alongside the inference host, and `github-copilot/chat/token`
+  // is a known token route there. If the exchange for a server-to-server token lives anywhere,
+  // this is the likeliest neighbourhood.
+  'https://github.com/github-copilot/chat/token',
+  'https://github.com/github-copilot/token',
+  'https://github.com/copilot_internal/v2/token',
 ];
 
 const EXCHANGE_URL = EXCHANGE_URLS[0] as string;

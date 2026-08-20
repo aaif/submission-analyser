@@ -95,19 +95,53 @@ jobs:
         run: |
           copilot --yolo -p 'Reply with the single word OK and nothing else.'
 
-      # Hostnames only, sorted and deduplicated. This is the datum the whole job exists for:
-      # if a host appears here that the matrix above did not try, that is the answer.
-      - name: Report which hosts the CLI contacted
+      # The CLI works from this job with this token against api.githubcopilot.com — the host
+      # that refuses our own probe. So the credential and the org policy are fine and the
+      # difference is in the *request*: either a token exchange at a route we have not found,
+      # or headers we are not sending. This step extracts both.
+      #
+      # Everything printed here is a URL path or a header name/value — never a header we know
+      # carries the credential, and everything is passed through a redactor for the token
+      # shapes on the way out. `github.com` appearing alongside the inference host is the lead:
+      # the exchange may live there rather than on api.github.com.
+      - name: Report the routes and headers the CLI used
         if: always()
         run: |
+          set -o pipefail
           shopt -s nullglob
-          found=0
-          for dir in "$HOME/.copilot" "$HOME/.config/copilot" "$RUNNER_TEMP/copilot-logs"; do
-            [ -d "$dir" ] || continue
-            found=1
-            echo "--- $dir"
-            find "$dir" -type f | head -50
-            grep -rhoE 'https?://[A-Za-z0-9._-]+' "$dir" 2>/dev/null | sort -u || true
+
+          # Belt and braces over Actions' own masking of secrets.GITHUB_TOKEN.
+          redact() {
+            sed -E \
+              -e 's/gh[pousr]_[A-Za-z0-9_]{10,}/[REDACTED-TOKEN]/g' \
+              -e 's/github_pat_[A-Za-z0-9_]{10,}/[REDACTED-TOKEN]/g' \
+              -e 's/tid=[^;" ]+/tid=[REDACTED]/g' \
+              -e 's/(([Aa]uthorization|[Cc]ookie)[": ]+)[^",]+/\1[REDACTED]/g'
+          }
+
+          dirs=()
+          for dir in "$HOME/.copilot" "$HOME/.config/copilot"; do
+            [ -d "$dir" ] && dirs+=("$dir")
           done
-          [ "$found" = 1 ] || echo 'No CLI log directory found; this build logs elsewhere.'
+          if [ ${#dirs[@]} -eq 0 ]; then
+            echo 'No CLI log directory found.'
+            exit 0
+          fi
+
+          echo '=== Full URLs, with paths (this is the datum: which route mints the token) ==='
+          grep -rhoE 'https?://[A-Za-z0-9._-]+(/[A-Za-z0-9._~%!$&()*+,;=:@/-]*)?' "${dirs[@]}" 2>/dev/null \
+            | sort -u | redact
+
+          echo
+          echo '=== Header names seen (values shown only for the non-credential ones) ==='
+          grep -rhoiE '(copilot-integration-id|editor-version|editor-plugin-version|x-initiator|x-github-api-version|openai-intent|user-agent)[": ]+[A-Za-z0-9./_-]+' "${dirs[@]}" 2>/dev/null \
+            | sort -u | redact
+
+          echo
+          echo '=== Config keys (names only, no values) ==='
+          for f in "$HOME/.copilot/config.json"; do
+            [ -f "$f" ] && node -e "console.log(Object.keys(require('$f')).join(' '))" || true
+          done
+
+          echo
           echo "prompt step outcome: ${{ steps.prompt.outcome }}"
