@@ -19,10 +19,10 @@
 name: Model canary
 
 on:
-  schedule:
+  # schedule:
     # 07:15 UTC daily. Off the hour on purpose — the top of the hour is the busiest slot on
     # GitHub's scheduler and scheduled runs there are the most likely to be delayed.
-    - cron: '15 7 * * *'
+    # - cron: '15 7 * * *'
   workflow_dispatch:
 
 # Read-only, including issues: a dry run analyses and publishes nothing, so it needs no
